@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
+import * as mammoth from 'mammoth';
 import { GRADES, QUESTION_TYPES, DIFFICULTIES, QUESTION_COUNTS, SUBJECTS, LIT_PAGE_COUNTS, WORK_MODES } from '../constants';
 import { ExamRequest, QuestionType, WorkMode } from '../types';
 
@@ -18,6 +19,50 @@ export const InputForm: React.FC<InputFormProps> = ({
   const isLiterature = request.subject === 'Ngữ văn / Tiếng Việt';
   const isEssayType = request.type === QuestionType.Essay;
   const isLessonPlanMode = request.mode === WorkMode.LessonPlan;
+
+  // State and Refs for File Upload
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [isReadingFile, setIsReadingFile] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset previous states
+    setFileError(null);
+    setFileName(file.name);
+    setIsReadingFile(true);
+
+    try {
+      if (file.name.endsWith('.docx')) {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        onChange('specificRequirements', result.value);
+      } else if (file.name.endsWith('.txt')) {
+        const text = await file.text();
+        onChange('specificRequirements', text);
+      } else {
+        setFileError("Vui lòng chỉ tải lên file Word (.docx) hoặc file Text (.txt)");
+        setFileName(null);
+        onChange('specificRequirements', '');
+      }
+    } catch (err) {
+      console.error("Error reading file:", err);
+      setFileError("Không thể đọc file. File có thể bị lỗi hoặc được bảo vệ.");
+    } finally {
+      setIsReadingFile(false);
+      // Reset input so user can re-select same file if needed
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const triggerFileUpload = () => {
+    fileInputRef.current?.click();
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">
@@ -103,16 +148,82 @@ export const InputForm: React.FC<InputFormProps> = ({
 
         {/* Specific Requirements / Lesson Content */}
         <div className="space-y-2 md:col-span-2">
-          <label className="block text-sm font-medium text-slate-700">
-            {isLessonPlanMode ? 'Nội dung giáo án gốc (Dán nội dung vào đây để AI tích hợp NLS)' : 'Dạng bài tập / Yêu cầu cụ thể (Tùy chọn)'}
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            {isLessonPlanMode ? 'Tài liệu giáo án (Tải lên file Word)' : 'Dạng bài tập / Yêu cầu cụ thể (Tùy chọn)'}
           </label>
-          <textarea
-            value={request.specificRequirements || ''}
-            onChange={(e) => onChange('specificRequirements', e.target.value)}
-            placeholder={isLessonPlanMode ? "Copy và paste toàn bộ nội dung giáo án hiện tại của bạn vào đây..." : "Ví dụ: Tập trung vào phân tích nhân vật..."}
-            rows={isLessonPlanMode ? 8 : 2}
-            className="block w-full rounded-lg border-slate-300 bg-slate-50 py-3 px-4 text-slate-900 focus:border-blue-500 focus:ring-blue-500 sm:text-sm border transition-shadow shadow-sm resize-none"
-          />
+          
+          {isLessonPlanMode ? (
+            <div className="space-y-3">
+              {/* File Upload Area */}
+              <div 
+                onClick={triggerFileUpload}
+                className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition-colors ${
+                  fileName 
+                    ? 'border-blue-300 bg-blue-50' 
+                    : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50'
+                }`}
+              >
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleFileChange} 
+                  accept=".docx,.txt" 
+                  className="hidden" 
+                />
+                
+                {isReadingFile ? (
+                   <div className="flex flex-col items-center text-blue-600">
+                      <svg className="animate-spin h-8 w-8 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span className="text-sm font-medium">Đang đọc tài liệu...</span>
+                   </div>
+                ) : fileName ? (
+                  <div className="flex flex-col items-center">
+                    <div className="bg-white p-3 rounded-full shadow-sm mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    </div>
+                    <span className="font-semibold text-slate-800 text-sm mb-1">{fileName}</span>
+                    <span className="text-xs text-blue-600 font-medium hover:underline">Nhấn để thay đổi file</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center text-slate-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    <span className="text-sm font-medium">Nhấn để tải file Word (.docx)</span>
+                    <span className="text-xs mt-1 text-slate-400">Hỗ trợ tốt nhất cho file Word thông thường</span>
+                  </div>
+                )}
+              </div>
+              
+              {fileError && (
+                <p className="text-xs text-red-600 flex items-center gap-1">
+                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                   {fileError}
+                </p>
+              )}
+
+              {/* Preview Textarea (Read-only or Editable) */}
+              <div className="relative">
+                 <label className="text-xs font-semibold text-slate-500 mb-1 block">Nội dung đã đọc (Có thể chỉnh sửa):</label>
+                 <textarea
+                  value={request.specificRequirements || ''}
+                  onChange={(e) => onChange('specificRequirements', e.target.value)}
+                  placeholder="Nội dung giáo án sẽ hiển thị tại đây sau khi tải file..."
+                  rows={6}
+                  className="block w-full rounded-lg border-slate-300 bg-slate-50 py-3 px-4 text-slate-900 focus:border-blue-500 focus:ring-blue-500 sm:text-xs border transition-shadow shadow-sm resize-none font-mono"
+                />
+              </div>
+            </div>
+          ) : (
+            <textarea
+              value={request.specificRequirements || ''}
+              onChange={(e) => onChange('specificRequirements', e.target.value)}
+              placeholder="Ví dụ: Tập trung vào phân tích nhân vật..."
+              rows={2}
+              className="block w-full rounded-lg border-slate-300 bg-slate-50 py-3 px-4 text-slate-900 focus:border-blue-500 focus:ring-blue-500 sm:text-sm border transition-shadow shadow-sm resize-none"
+            />
+          )}
         </div>
 
         {/* Hide extra fields if in Lesson Plan Mode */}
