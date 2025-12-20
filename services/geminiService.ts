@@ -1,91 +1,99 @@
+
+// @google/genai Coding Guidelines followed.
 import { GoogleGenAI } from "@google/genai";
-import { SYSTEM_INSTRUCTION, LESSON_PLAN_INSTRUCTION } from "../constants";
+import { SYSTEM_INSTRUCTION, LESSON_PLAN_INSTRUCTION, PRESENTATION_INSTRUCTION } from "../constants";
 import { ExamRequest, QuestionType, WorkMode } from "../types";
 
 export const generateExamStream = async (
   request: ExamRequest,
   onChunk: (text: string) => void
 ): Promise<void> => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("API Key is missing. Please set process.env.API_KEY.");
+  if (!process.env.API_KEY) {
+    throw new Error("API Key is missing.");
   }
-
-  // Create a new instance for each request to ensure fresh config/key if needed
-  const ai = new GoogleGenAI({ apiKey });
+  
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   let systemInstruction = SYSTEM_INSTRUCTION;
   let userPrompt = '';
 
-  if (request.mode === WorkMode.LessonPlan) {
-    // Mode: Soạn Giáo Án Năng Lực Số
+  if (request.mode === WorkMode.lesson_plan) {
     systemInstruction = LESSON_PLAN_INSTRUCTION;
     userPrompt = `
-    Yêu cầu: Soạn giáo án tích hợp Năng lực số.
-    - Môn học: ${request.subject}
-    - Khối lớp: ${request.grade}
-    - Tên bài học / Chủ đề: ${request.topic}
-    - Nội dung giáo án gốc cần phân tích và tích hợp:
+    [MASTER DIRECTIVE] CHẾ ĐỘ: Soạn Giáo án NLS.
+    - Môn: ${request.subject}, Lớp: ${request.grade}, Bài: ${request.topic}
+    - Quy tắc: Mọi công thức toán học phải là mã LaTeX nằm trong cặp dấu $ đơn, văn bản KHÔNG định dạng bold/italic.
+    - Tài liệu nguồn: 
+    ${request.specificRequirements || 'Người dùng chưa cung cấp file, hãy soạn thảo dựa trên kiến thức chuẩn.'}
+    `;
+  } else if (request.mode === WorkMode.presentation) {
+    systemInstruction = PRESENTATION_INSTRUCTION;
+    userPrompt = `
+    [MASTER DIRECTIVE: CONTENT-BASED DESIGNER]
+    YÊU CẦU: Thiết kế Slide Bài Giảng DỰA TRÊN TÀI LIỆU NGUỒN.
+    - Đối tượng: Học sinh lớp ${request.grade}, Môn ${request.subject}
+    - Chủ đề chính: ${request.topic}
+    - Quy tắc: Sử dụng LaTeX $ (dấu đô la đơn) cho toán học, văn bản thuần túy hoàn toàn không định dạng Markdown.
     
-    ${request.specificRequirements ? request.specificRequirements : '[Người dùng chưa cung cấp nội dung, hãy tự soạn một giáo án mẫu dựa trên tên bài học]'}
+    TÀI LIỆU NGUỒN CẦN CHUYỂN HÓA:
+    ${request.specificRequirements || 'KHÔNG CÓ TÀI LIỆU NGUỒN. Hãy dựa vào chủ đề để tạo bài giảng chuẩn.'}
     `;
   } else {
-    // Mode: Tạo Bài Tập (Default)
     const isLiterature = request.subject === 'Ngữ văn / Tiếng Việt';
-    const isEssay = request.type === QuestionType.Essay;
-
-    let extraPrompt = '';
-    
-    if (isLiterature || isEssay) {
-      extraPrompt = `
-      LƯU Ý ĐẶC BIỆT: Đây là yêu cầu tạo đề Văn / Bài tự luận.
-      1. Số lượng câu hỏi: Chỉ tạo 01 câu duy nhất.
-      2. Yêu cầu đáp án: BẮT BUỘC PHẢI BAO GỒM 2 PHẦN:
-         - Phần 1: Dàn ý chi tiết.
-         - Phần 2: Bài văn hoàn chỉnh (Độ dài khoảng ${request.literaturePageCount || 2} trang).
-      `;
-    }
-
     userPrompt = `
-      Hãy tạo đề thi với các thông số sau:
-      - Môn học: ${request.subject}
-      - Khối lớp: ${request.grade}
-      - Chủ đề: ${request.topic}
-      - Dạng bài tập/Yêu cầu cụ thể: ${request.specificRequirements ? request.specificRequirements : 'Không có (Tạo bài tập bao quát cả chủ đề)'}
-      - Loại câu hỏi: ${request.type}
-      - Mức độ: ${request.difficulty}
-      - Số lượng câu hỏi: ${isLiterature || isEssay ? '1 câu (Bài làm văn)' : request.questionCount}
-      ${extraPrompt}
-      
-      Hãy lưu ý đặc thù của môn ${request.subject} ở lớp ${request.grade} để sử dụng ngôn ngữ và kiến thức phù hợp nhất.
+      Tạo bài tập:
+      - Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}
+      - Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}
+      - YÊU CẦU QUAN TRỌNG: Hiển thị MỌI công thức/biểu thức toán học bằng mã LaTeX trong dấu $ đơn (Ví dụ: $x+y=1$). Văn bản KHÔNG ĐƯỢC định dạng in đậm hay in nghiêng, hãy viết bình thường.
+      - Nguồn dữ liệu: ${request.specificRequirements || ''}
     `;
   }
 
   try {
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: userPrompt }],
-        },
-      ],
+      model: 'gemini-3-pro-preview',
+      contents: userPrompt,
       config: {
         systemInstruction: systemInstruction,
-        temperature: 0.3, // Lower temperature for faster, more deterministic results
-        maxOutputTokens: 8192,
-        thinkingConfig: { thinkingBudget: 0 }, // Disable thinking to reduce latency (fix for "taking too long")
+        temperature: 0.2, // Giảm temperature để tăng tính ổn định của định dạng
+        thinkingConfig: { thinkingBudget: 4000 },
       },
     });
 
     for await (const chunk of responseStream) {
-      const text = chunk.text;
-      if (text) {
-        onChunk(text);
+      if (chunk.text) {
+        onChunk(chunk.text);
       }
     }
   } catch (error) {
-    console.error("Error generating exam:", error);
+    console.error("Error generating content:", error);
     throw error;
+  }
+};
+
+export const generateImageFromAI = async (prompt: string): Promise<string | null> => {
+  if (!process.env.API_KEY) return null;
+  
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [{ text: `${prompt}, high quality educational graphic, clean, 16:9` }],
+      },
+      config: {
+        imageConfig: { aspectRatio: "16:9" }
+      }
+    });
+
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error("Image generation failed:", error);
+    return null;
   }
 };

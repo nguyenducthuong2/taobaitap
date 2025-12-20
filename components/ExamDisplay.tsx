@@ -1,325 +1,352 @@
-import React, { useMemo, useState } from 'react';
+
+import React, { useMemo, useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import pptxgen from "pptxgenjs";
+import { generateImageFromAI } from '../services/geminiService';
 import { 
   Document, 
   Packer, 
   Paragraph, 
   TextRun, 
-  HeadingLevel, 
-  PageBreak, 
-  AlignmentType, 
-  Table, 
-  TableRow, 
-  TableCell, 
-  WidthType, 
-  BorderStyle 
+  HeadingLevel,
+  AlignmentType,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  BorderStyle,
+  VerticalAlign
 } from "docx";
 
 interface ExamDisplayProps {
   content: string;
+  isPresentationMode?: boolean;
+  isGenerating?: boolean;
 }
 
-export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content }) => {
-  const [isDownloading, setIsDownloading] = useState(false);
+export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentationMode, isGenerating }) => {
+  const [isExporting, setIsExporting] = useState(false);
+  const [isProcessingImages, setIsProcessingImages] = useState(false);
+  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+  const [imagesMap, setImagesMap] = useState<Record<number, string>>({});
 
-  // Parse the content into two parts based on the headers defined in SYSTEM_INSTRUCTION
-  const { questionsPart, answersPart } = useMemo(() => {
-    const part2Marker = "### PHẦN 2: ĐÁP ÁN VÀ LỜI GIẢI"; // Marker specific to Exercise mode
+  const slidesRawData = useMemo(() => {
+    if (!isPresentationMode) return [];
+    return content.split(/---/).filter(s => s.trim().length > 5);
+  }, [content, isPresentationMode]);
+
+  useEffect(() => {
+    if (!isPresentationMode || isGenerating || slidesRawData.length === 0) return;
     
-    // Check if the content contains the split marker
-    if (content.includes(part2Marker)) {
-      const [part1, part2] = content.split(part2Marker);
-      return {
-        questionsPart: part1.trim(),
-        answersPart: `${part2Marker}\n${part2}`.trim() // Keep the header for Part 2
-      };
+    const prompts = slidesRawData.map((s, idx) => ({ idx, text: s })).filter(s => s.text.includes('[IMAGE_PROMPT:'));
+    const missingIndices = prompts.filter(p => !imagesMap[p.idx]);
+
+    if (missingIndices.length === 0) {
+      setIsProcessingImages(false);
+      return;
     }
-    
-    // If Part 2 hasn't started generating yet, or in Lesson Plan mode (no Part 2 marker), everything is Part 1
-    return {
-      questionsPart: content.trim(),
-      answersPart: ''
-    };
-  }, [content]);
 
-  if (!content) return null;
+    const processImages = async () => {
+      setIsProcessingImages(true);
+      for (const item of missingIndices) {
+        const match = item.text.match(/\[IMAGE_PROMPT:\s*(.*?)\]/);
+        if (match && match[1]) {
+          try {
+            const imgData = await generateImageFromAI(match[1]);
+            if (imgData) {
+              setImagesMap(prev => ({ ...prev, [item.idx]: imgData }));
+            }
+          } catch (err) {
+            console.error("Lỗi tạo ảnh cho slide", item.idx, err);
+          }
+        }
+      }
+      setIsProcessingImages(false);
+    };
+    
+    processImages();
+  }, [isGenerating, isPresentationMode, slidesRawData]);
+
+  const NLS_PATTERN = /(\d+\.\d+\.[A-Z]{2,3}\d+[a-z]?)/g;
+
+  const createStyledRuns = (text: string, isHeader: boolean = false) => {
+    const parts = text.split(NLS_PATTERN);
+    return parts.map((part, index) => {
+      const isNLS = NLS_PATTERN.test(part);
+      NLS_PATTERN.lastIndex = 0;
+      return new TextRun({
+        text: part,
+        bold: isNLS || isHeader,
+        color: isNLS ? "0000FF" : undefined,
+        size: 24,
+      });
+    });
+  };
 
   const handleDownloadWord = async () => {
-    setIsDownloading(true);
+    setIsExporting(true);
     try {
-      // --- Helper: Parse Inline Formatting (Bold, Italic, LaTeX) ---
-      const parseTextRuns = (text: string): TextRun[] => {
-        const runs: TextRun[] = [];
-        // Regex to match **bold**, *italic*, or $latex$
-        // Note: This is a simplified parser. 
-        // Group 1: **bold**
-        // Group 2: *italic*
-        // Group 3: <u>underline</u>
-        // Group 4: $latex$
-        const regex = /(\*\*[^*]+\*\*)|(\*[^*]+\*)|(<u>[^<]+<\/u>)|(\$[^$]+\$)/g;
-        
-        let lastIndex = 0;
-        let match;
+      const lines = [...content.split('\n'), ""]; // Thêm dòng trống để trigger kết thúc bảng cuối
+      const children: any[] = [];
+      let currentTableRows: string[][] = [];
+      let isCollectingTable = false;
 
-        while ((match = regex.exec(text)) !== null) {
-          // Push preceding plain text
-          if (match.index > lastIndex) {
-            runs.push(new TextRun({ 
-              text: text.slice(lastIndex, match.index),
-              font: "Times New Roman",
-              size: 24
-            }));
-          }
-
-          const fullMatch = match[0];
-          
-          if (match[1]) { // Bold
-             runs.push(new TextRun({ 
-               text: fullMatch.slice(2, -2), 
-               bold: true,
-               font: "Times New Roman",
-               size: 24
-             }));
-          } else if (match[2]) { // Italic
-            runs.push(new TextRun({ 
-              text: fullMatch.slice(1, -1), 
-              italics: true,
-              font: "Times New Roman",
-              size: 24
-            }));
-          } else if (match[3]) { // Underline
-            runs.push(new TextRun({ 
-              text: fullMatch.slice(3, -4), 
-              underline: {},
-              font: "Times New Roman",
-              size: 24
-            }));
-          } else if (match[4]) { // LaTeX ($...$)
-            runs.push(new TextRun({ 
-              text: fullMatch, 
-              color: "2E74B5", // Slight blue tint to indicate math/code
-              font: "Cambria Math", // Preferred for math
-              size: 24
-            }));
-          }
-
-          lastIndex = regex.lastIndex;
-        }
-
-        // Push remaining text
-        if (lastIndex < text.length) {
-          runs.push(new TextRun({ 
-            text: text.slice(lastIndex),
-            font: "Times New Roman",
-            size: 24
+      const flushTable = () => {
+        if (currentTableRows.length > 0) {
+          children.push(new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: currentTableRows.map((row, idx) => new TableRow({
+              children: row.map(cell => new TableCell({
+                children: [new Paragraph({ 
+                  children: createStyledRuns(cell, idx === 0),
+                  alignment: idx === 0 ? AlignmentType.CENTER : AlignmentType.LEFT
+                })],
+                verticalAlign: VerticalAlign.CENTER,
+                shading: idx === 0 ? { fill: "F2F2F2" } : undefined,
+                borders: {
+                  top: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+                  bottom: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+                  left: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+                  right: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+                }
+              }))
+            }))
           }));
+          children.push(new Paragraph({ text: "" }));
+          currentTableRows = [];
         }
-
-        return runs;
+        isCollectingTable = false;
       };
 
-      // --- Helper: Process Markdown to Docx Elements ---
-      const processMarkdownLines = (markdownText: string): (Paragraph | Table)[] => {
-        const elements: (Paragraph | Table)[] = [];
-        const lines = markdownText.split('\n');
-        
-        let i = 0;
-        while (i < lines.length) {
-          const line = lines[i].trim();
-
-          // 1. Table Detection
-          if (line.startsWith('|')) {
-            const tableRows: TableRow[] = [];
-            
-            // Check if it's a valid table start
-            while (i < lines.length && lines[i].trim().startsWith('|')) {
-              const rowContent = lines[i].trim();
-              
-              // Skip delimiter row (e.g., |---|---|)
-              if (rowContent.match(/^\|[\s-:]+\|[\s-:]+\|/)) {
-                i++;
-                continue;
-              }
-
-              // Parse cells
-              // Remove first and last pipe if they exist to avoid empty first/last cells
-              const cleanRow = rowContent.replace(/^\|/, '').replace(/\|$/, '');
-              const cells = cleanRow.split('|').map(cellText => {
-                return new TableCell({
-                  children: [new Paragraph({ 
-                    children: parseTextRuns(cellText.trim()),
-                    alignment: AlignmentType.LEFT 
-                  })],
-                  width: { size: 100, type: WidthType.PERCENTAGE }, // Distribute evenly for now
-                  borders: {
-                    top: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                    bottom: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                    left: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                    right: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                  },
-                  margins: { top: 100, bottom: 100, left: 100, right: 100 }
-                });
-              });
-
-              tableRows.push(new TableRow({ children: cells }));
-              i++;
-            }
-
-            if (tableRows.length > 0) {
-              elements.push(new Table({
-                rows: tableRows,
-                width: { size: 100, type: WidthType.PERCENTAGE },
-              }));
-              // Add a spacer paragraph after table
-              elements.push(new Paragraph({ text: "" })); 
-            }
-            continue; // Continue outer loop
+      lines.forEach((line) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('|')) {
+          isCollectingTable = true;
+          const cells = trimmed.split('|').map(c => c.trim()).filter((c, i, arr) => i > 0 && i < arr.length - 1);
+          // Bỏ qua dòng separator |---|---|
+          if (!cells.every(c => c.includes('---'))) {
+            currentTableRows.push(cells);
+          }
+        } else {
+          if (isCollectingTable) {
+            flushTable();
           }
 
-          // 2. Headings
-          if (line.startsWith('#')) {
-            let level = HeadingLevel.HEADING_1;
-            let text = line;
-            if (line.startsWith('### ')) { level = HeadingLevel.HEADING_3; text = line.replace('### ', ''); }
-            else if (line.startsWith('## ')) { level = HeadingLevel.HEADING_2; text = line.replace('## ', ''); }
-            else if (line.startsWith('# ')) { level = HeadingLevel.HEADING_1; text = line.replace('# ', ''); }
-
-            elements.push(new Paragraph({
-              text: text,
-              heading: level,
-              spacing: { before: 240, after: 120 }
+          if (trimmed.startsWith('### ')) {
+            const headingText = trimmed.replace('### ', '').replace(/\*\*/g, '');
+            children.push(new Paragraph({
+              text: headingText,
+              heading: HeadingLevel.HEADING_2,
+              spacing: { before: 240, after: 120 },
+              bold: true
             }));
-            i++;
-            continue;
+          } else if (trimmed && !trimmed.includes('[IMAGE_PROMPT')) {
+            children.push(new Paragraph({
+              children: createStyledRuns(trimmed),
+              spacing: { before: 80, after: 80 },
+            }));
           }
-
-          // 3. Lists
-          if (line.startsWith('- ') || line.startsWith('* ')) {
-             elements.push(new Paragraph({
-               children: parseTextRuns(line.replace(/^[-*] /, '')),
-               bullet: { level: 0 },
-               spacing: { after: 120 }
-             }));
-             i++;
-             continue;
-          }
-
-          // 4. Regular Paragraphs
-          if (line) {
-             elements.push(new Paragraph({
-               children: parseTextRuns(line),
-               spacing: { after: 120 },
-               alignment: AlignmentType.JUSTIFIED
-             }));
-          } else {
-            // Empty line
-            elements.push(new Paragraph({ text: "" }));
-          }
-
-          i++;
         }
-        return elements;
-      };
-
-      // Construct the Document
-      const docChildren = [
-        new Paragraph({
-          text: "EDUGEN VN - TÀI LIỆU TỰ ĐỘNG",
-          heading: HeadingLevel.HEADING_1,
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 400 }
-        }),
-        ...processMarkdownLines(questionsPart)
-      ];
-
-      // Add Answers section if it exists
-      if (answersPart) {
-        docChildren.push(new Paragraph({
-          children: [new PageBreak()]
-        }));
-        docChildren.push(...processMarkdownLines(answersPart));
-      }
+      });
 
       const doc = new Document({
         sections: [{
-          properties: {},
-          children: docChildren,
-        }],
+          children: [
+            new Paragraph({
+              text: "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)",
+              heading: HeadingLevel.HEADING_1,
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 300 }
+            }),
+            ...children
+          ]
+        }]
       });
 
       const blob = await Packer.toBlob(doc);
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `EduGen_TaiLieu_${new Date().toISOString().slice(0,10)}.docx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `GiaoAn_EduGen_${Date.now()}.docx`;
+      link.click();
     } catch (error) {
-      console.error("Error creating Word document:", error);
-      alert("Có lỗi khi tạo file Word. Vui lòng thử lại.");
-    } finally {
-      setIsDownloading(false);
+      console.error("Lỗi khi tạo file Word:", error);
+    } finally { setIsExporting(false); }
+  };
+
+  const handleDownloadPptx = async () => {
+    setIsExporting(true);
+    try {
+      const PptxGenConstructor = (pptxgen as any).default || pptxgen;
+      const pres = new PptxGenConstructor();
+      pres.layout = 'LAYOUT_16x9';
+
+      slidesRawData.forEach((slideRaw, idx) => {
+        const slide = pres.addSlide();
+        const lines = slideRaw.trim().split('\n');
+        let title = "NỘI DUNG BÀI GIẢNG";
+        let bodyLines: string[] = [];
+        
+        lines.forEach(l => {
+          const cleanLine = l.trim();
+          if (cleanLine.startsWith('### ')) {
+            title = cleanLine.replace('### ', '').trim();
+          } else if (cleanLine && !cleanLine.includes('[IMAGE_PROMPT')) {
+            bodyLines.push(cleanLine);
+          }
+        });
+
+        slide.background = { fill: "F8FAFC" };
+
+        slide.addText(title.toUpperCase(), { 
+          x: 0.5, y: 0.2, w: 9.0, h: 0.8, 
+          fontSize: 24, bold: true, color: '1E3A8A',
+          align: 'center', valign: 'middle' 
+        });
+
+        const hasImage = !!imagesMap[idx];
+        const bodyW = hasImage ? 5.8 : 9.0;
+        
+        let fontSize = 18;
+        if (bodyLines.length > 12) fontSize = 11;
+        else if (bodyLines.length > 10) fontSize = 13;
+        else if (bodyLines.length > 8) fontSize = 15;
+        else if (bodyLines.length > 5) fontSize = 17;
+
+        const textObjects = bodyLines.map(text => ({
+          text: text,
+          options: { 
+            bullet: true, 
+            fontSize: fontSize, 
+            color: '334155',
+            paraSpaceBefore: 0.05,
+            breakLine: true
+          }
+        }));
+
+        slide.addText(textObjects, { 
+          x: 0.5, y: 1.2, w: bodyW, h: 3.8,
+          valign: 'top',
+          align: 'left',
+          autoFit: true
+        });
+
+        if (hasImage) {
+          slide.addImage({ 
+            data: imagesMap[idx], 
+            x: 6.5, y: 1.2, w: 3.0, h: 3.5,
+            sizing: { type: 'contain' }
+          });
+        }
+
+        slide.addText("EduGen VN BY NGUYỄN ĐỨC THƯƠNG - Hệ sinh thái giáo dục số", {
+          x: 0.0, y: 5.2, w: 10, h: 0.3,
+          fontSize: 9, color: '94A3B8', align: 'center', italic: true
+        });
+      });
+      
+      await pres.writeFile({ fileName: `Slide_EduGen_${Date.now()}.pptx` });
+    } catch (err) {
+      console.error("Lỗi xuất file PPTX:", err);
+      alert("Có lỗi xảy ra khi tạo file PPTX. Vui lòng thử lại.");
+    } finally { 
+      setIsExporting(false); 
     }
   };
 
+  const markdownComponents = {
+    text: ({ children }: any) => {
+      if (typeof children !== 'string') return children;
+      const parts = children.split(NLS_PATTERN);
+      return parts.map((part, i) => {
+        if (NLS_PATTERN.test(part)) {
+          NLS_PATTERN.lastIndex = 0;
+          return <span key={i} className="font-bold text-blue-600 underline-offset-4">{part}</span>;
+        }
+        return part;
+      });
+    }
+  };
+
+  const isWorking = isGenerating || isProcessingImages;
+
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[700px] lg:h-[900px]">
-      <div className="bg-slate-50 border-b border-slate-200 px-6 py-3 flex items-center justify-between sticky top-0 z-10">
-        <h3 className="font-semibold text-slate-700 flex items-center gap-2">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-          Nội Dung Tài Liệu
-        </h3>
+    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col h-[750px] lg:h-[900px]">
+      <div className="bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`p-2 rounded-lg ${isPresentationMode ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+          </div>
+          <div className="flex flex-col">
+            <span className="font-bold text-slate-700 leading-none">Studio EduGen</span>
+            {isWorking && (
+              <span className="text-[9px] font-bold text-blue-600 animate-pulse mt-1 flex items-center gap-1 uppercase">
+                <span className="w-1.5 h-1.5 bg-blue-600 rounded-full"></span>
+                Đang xử lý dữ liệu...
+              </span>
+            )}
+          </div>
+        </div>
         <button
-          onClick={handleDownloadWord}
-          disabled={isDownloading}
-          className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors shadow-sm font-medium flex items-center gap-2 disabled:opacity-50"
+          onClick={isPresentationMode ? handleDownloadPptx : handleDownloadWord}
+          disabled={isExporting || isWorking}
+          className={`px-5 py-2 rounded-xl text-white font-bold text-sm shadow-md transition-all flex items-center gap-2 ${
+            isWorking ? 'animate-pulse opacity-80 cursor-wait' : ''
+          } ${isPresentationMode ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'}`}
         >
-          {isDownloading ? (
-            <>
-              <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              Đang tạo file...
-            </>
+          {isExporting ? (
+             <>
+               <svg className="animate-spin h-4 w-4 text-white" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+               ĐANG TẢI...
+             </>
+          ) : isGenerating ? (
+             "ĐANG SOẠN VĂN BẢN..."
+          ) : isProcessingImages ? (
+             "ĐANG VẼ ẢNH AI..."
+          ) : isPresentationMode ? (
+             "TẢI SLIDE (PPTX)"
           ) : (
-            <>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-              Tải về Word (.docx)
-            </>
+             "TẢI FILE WORD"
           )}
         </button>
       </div>
-      
-      <div className="flex-grow flex flex-col lg:flex-row overflow-hidden bg-white">
-        {/* Column 1: Questions / Content */}
-        <div className={`flex-1 overflow-y-auto custom-scrollbar border-b lg:border-b-0 ${answersPart ? 'lg:border-r' : ''} border-slate-200 p-6 min-h-[50%] lg:min-h-full`}>
-           <div className="sticky top-0 bg-white/95 backdrop-blur z-10 pb-2 mb-4 border-b border-slate-100">
-             <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">
-                {answersPart ? 'Đề Bài' : 'Nội dung giáo án / Đề thi'}
-             </span>
-           </div>
-           <div className="prose prose-slate max-w-none prose-headings:font-bold prose-headings:text-slate-800 prose-p:text-slate-700 prose-strong:text-slate-900 prose-li:text-slate-700 prose-sm prose-table:border-collapse prose-table:w-full prose-td:border prose-td:border-slate-300 prose-td:p-2 prose-th:border prose-th:border-slate-300 prose-th:p-2 prose-th:bg-slate-100">
-             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {questionsPart}
-            </ReactMarkdown>
-          </div>
-        </div>
 
-        {/* Column 2: Answers (Only visible if exists) */}
-        {answersPart && (
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-6 bg-slate-50/50 min-h-[50%] lg:min-h-full">
-             <div className="sticky top-0 bg-slate-50/95 backdrop-blur z-10 pb-2 mb-4 border-b border-slate-100">
-               <span className="text-xs font-bold text-green-600 uppercase tracking-wider">Đáp Án & Lời Giải</span>
-             </div>
-             <div className="prose prose-slate max-w-none prose-headings:font-bold prose-headings:text-slate-800 prose-p:text-slate-700 prose-strong:text-slate-900 prose-li:text-slate-700 prose-sm">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {answersPart}
-                </ReactMarkdown>
+      <div className="flex-grow overflow-y-auto bg-slate-50 p-6 custom-scrollbar">
+        {isPresentationMode && slidesRawData.length > 0 ? (
+          <div className="flex flex-col items-center">
+            <div className="w-full max-w-4xl aspect-[16/9] bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col p-8 relative">
+              <h4 className="text-2xl font-bold text-blue-700 mb-6 border-b pb-4">
+                {slidesRawData[currentSlideIndex].match(/### (.*)/)?.[1] || "Slide Content"}
+              </h4>
+              <div className="flex gap-8 flex-grow">
+                <div className="flex-grow prose prose-slate">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {slidesRawData[currentSlideIndex].replace(/### .*\n/, '').replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
+                  </ReactMarkdown>
+                </div>
+                {imagesMap[currentSlideIndex] ? (
+                  <div className="w-1/3 rounded-xl overflow-hidden shadow-md">
+                    <img src={imagesMap[currentSlideIndex]} className="w-full h-full object-cover" alt="AI slide" />
+                  </div>
+                ) : slidesRawData[currentSlideIndex].includes('[IMAGE_PROMPT:') ? (
+                  <div className="w-1/3 rounded-xl bg-slate-100 flex flex-col items-center justify-center text-slate-400 gap-2 border border-dashed border-slate-300">
+                    <svg className="animate-spin h-6 w-6 text-slate-300" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Đang vẽ ảnh...</span>
+                  </div>
+                ) : null}
+              </div>
             </div>
+            <div className="mt-6 flex items-center gap-4">
+              <button onClick={() => setCurrentSlideIndex(p => Math.max(0, p - 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50 transition-colors">◀</button>
+              <span className="font-bold text-slate-500 bg-white px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">{currentSlideIndex + 1} / {slidesRawData.length}</span>
+              <button onClick={() => setCurrentSlideIndex(p => Math.min(slidesRawData.length - 1, p + 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50 transition-colors">▶</button>
+            </div>
+          </div>
+        ) : (
+          <div className="max-w-4xl mx-auto bg-white p-10 rounded-xl shadow border prose prose-slate">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {content.replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
+            </ReactMarkdown>
           </div>
         )}
       </div>

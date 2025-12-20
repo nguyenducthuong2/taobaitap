@@ -1,3 +1,4 @@
+
 export enum Grade {
   Grade1 = '1',
   Grade2 = '2',
@@ -17,7 +18,7 @@ export enum QuestionType {
   MultipleChoice = 'Trắc nghiệm 4 phương án',
   TrueFalse = 'Đúng-Sai',
   ShortAnswer = 'Trả lời ngắn',
-  Essay = 'Bài tự luận (Viết văn)',
+  Essay = 'Bài tự luận',
   Mixed = 'Kết hợp',
 }
 
@@ -29,7 +30,6 @@ export enum Difficulty {
   Mixed = 'Kết hợp',
 }
 
-// Literature specific types
 export enum LiteratureAnswerType {
   Outline = 'Dàn ý gợi ý',
   FullEssay = 'Bài văn hoàn chỉnh',
@@ -37,8 +37,15 @@ export enum LiteratureAnswerType {
 
 export enum WorkMode {
   Exercise = 'exercise',
-  LessonPlan = 'lesson_plan',
+  lesson_plan = 'lesson_plan',
+  presentation = 'presentation',
 }
+
+export const WorkModeMapping = {
+  Exercise: 'exercise',
+  LessonPlan: 'lesson_plan',
+  Presentation: 'presentation'
+};
 
 export type LiteraturePageCount = 1 | 2 | 3 | 4 | 5;
 
@@ -48,10 +55,10 @@ export interface ExamRequest {
   grade: Grade;
   topic: string;
   specificRequirements?: string;
+  additionalInstructions?: string;
   type: QuestionType;
   difficulty: Difficulty;
   questionCount: number;
-  // Fields for Literature
   literatureAnswerType?: LiteratureAnswerType;
   literaturePageCount?: LiteraturePageCount;
 }
