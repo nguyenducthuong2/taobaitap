@@ -1,5 +1,6 @@
 
 
+
 // @google/genai Coding Guidelines followed.
 import { GoogleGenAI } from "@google/genai";
 import { SYSTEM_INSTRUCTION, LESSON_PLAN_INSTRUCTION, PRESENTATION_INSTRUCTION } from "../constants";
@@ -35,7 +36,8 @@ export const generateExamStream = async (
     userPrompt = `CHẾ ĐỘ: Thiết kế Slide. Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}. Dữ liệu giáo án: ${request.specificRequirements || 'N/A'}${additionalInstructions}`;
   } else {
     const isLiterature = request.subject === 'Ngữ văn / Tiếng Việt';
-    userPrompt = `Tạo bài tập: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}, Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}. Dữ liệu: ${request.specificRequirements || ''}${additionalInstructions}`;
+    // FIX: Changed '1' to 1 to ensure the ternary expression consistently returns a number type, avoiding a `string | number` union that caused a type error.
+    userPrompt = `Tạo bài tập: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}, Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? 1 : request.questionCount}. Dữ liệu: ${request.specificRequirements || ''}${additionalInstructions}`;
   }
 
   try {

@@ -10,6 +10,10 @@ import {
   HeadingLevel,
   AlignmentType,
   TextRun,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
 } from "docx";
 import { ExamRequest, WorkMode } from '../types';
 
@@ -152,49 +156,85 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   const handleDownloadWord = async () => {
     setIsExporting(true);
     try {
-      const docTitle = request.mode === WorkMode.lesson_plan
-        ? "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)"
-        : "BÀI TẬP VÀ LỜI GIẢI CHI TIẾT";
+        const docTitle = request.mode === WorkMode.lesson_plan
+            ? "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)"
+            : "BÀI TẬP VÀ LỜI GIẢI CHI TIẾT";
 
-      const createParagraphsFromLine = (line: string): Paragraph[] => {
-        const trimmedLine = line.trim();
-        if (trimmedLine === '') {
-          return [new Paragraph({ text: '' })];
-        }
+        const docChildren: (Paragraph | Table)[] = [
+            new Paragraph({ text: docTitle, heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER })
+        ];
 
-        const parts = trimmedLine.split(/(\$.*?\$)/g).filter(part => part);
-        
-        const children = parts.map(part => {
-          if (part.startsWith('$') && part.endsWith('$')) {
-            return new TextRun({ text: part });
-          }
-          return new TextRun({ text: part });
+        const lines = content.split('\n');
+        let inTable = false;
+        let tableRows: TableRow[] = [];
+
+        const createParagraphsFromLine = (line: string): Paragraph[] => {
+            const trimmedLine = line.trim();
+            if (trimmedLine === '') {
+                return [new Paragraph({ text: '' })];
+            }
+            const parts = trimmedLine.split(/(\$.*?\$)/g).filter(part => part);
+            const children = parts.map(part => new TextRun({ text: part }));
+            return [new Paragraph({ children, spacing: { before: 120 } })];
+        };
+
+        const createCell = (text: string, isHeader: boolean) => new TableCell({
+            children: [new Paragraph({ text, alignment: isHeader ? AlignmentType.CENTER : AlignmentType.LEFT })],
+            shading: isHeader ? { fill: 'EFEFEF' } : undefined,
         });
 
-        return [new Paragraph({ children, spacing: { before: 120 } })];
-      };
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('|') && trimmedLine.endsWith('|')) {
+                if (!inTable) {
+                    inTable = true;
+                    tableRows = [];
+                }
+                const cells = trimmedLine.split('|').slice(1, -1).map(cell => cell.trim());
+                if (cells.every(cell => /^-+$/.test(cell.replace(/:/g, '')))) {
+                    continue;
+                }
+                const isHeader = tableRows.length === 0;
+                tableRows.push(new TableRow({
+                    children: cells.map(cellText => createCell(cellText, isHeader)),
+                    tableHeader: isHeader,
+                }));
+            } else {
+                if (inTable) {
+                    docChildren.push(new Table({
+                        width: { size: 100, type: WidthType.PERCENTAGE },
+                        rows: tableRows,
+                    }));
+                    inTable = false;
+                    tableRows = [];
+                }
+                docChildren.push(...createParagraphsFromLine(line));
+            }
+        }
 
-      const doc = new Document({
-        sections: [{
-          children: [
-            new Paragraph({ text: docTitle, heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
-            ...content.split('\n').flatMap(createParagraphsFromLine)
-          ]
-        }]
-      });
+        if (inTable && tableRows.length > 0) {
+            docChildren.push(new Table({
+                width: { size: 100, type: WidthType.PERCENTAGE },
+                rows: tableRows,
+            }));
+        }
 
-      const blob = await Packer.toBlob(doc);
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      const fileName = request.mode === WorkMode.lesson_plan 
-        ? `GiaoAn_EduGen_${Date.now()}.docx` 
-        : `BaiTap_EduGen_${Date.now()}.docx`;
-      link.download = fileName;
-      link.click();
+        const doc = new Document({
+            sections: [{ children: docChildren }]
+        });
+
+        const blob = await Packer.toBlob(doc);
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        const fileName = request.mode === WorkMode.lesson_plan
+            ? `GiaoAn_EduGen_${Date.now()}.docx`
+            : `BaiTap_EduGen_${Date.now()}.docx`;
+        link.download = fileName;
+        link.click();
     } catch (err) {
-      console.error(err);
+        console.error(err);
     } finally {
-      setIsExporting(false);
+        setIsExporting(false);
     }
   };
 
