@@ -52,7 +52,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
       .map((s, idx) => ({ idx, text: s }))
       .filter(s => s.text.includes('[IMAGE_PROMPT:'))
       .map(s => s.idx)
-      .filter(idx => !imagesMap[idx] && !imageErrorMap[idx]?.includes("vĩnh viễn"));
+      .filter(idx => !imagesMap[idx] && !imageErrorMap[idx]);
 
     if (indicesToProcess.length === 0) {
       setQueueStatus("");
@@ -74,42 +74,38 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
       const match = slideText.match(/\[IMAGE_PROMPT:\s*(.*?)\]/);
       
       if (match && match[1]) {
-        setQueueStatus(`Đang vẽ ảnh slide ${idx + 1}...`);
-        
         let success = false;
         let attempts = 0;
+        const maxAttempts = 3;
 
-        while (!success && attempts < 2) {
+        while (!success && attempts < maxAttempts) {
+          attempts++;
           try {
             setImageErrorMap(prev => {
               const next = { ...prev };
               delete next[idx];
               return next;
             });
-
+            setQueueStatus(`Đang vẽ ảnh slide ${idx + 1} (Lần ${attempts}/${maxAttempts})...`);
+            
             const imgData = await generateImageFromAI(match[1]);
             setImagesMap(prev => ({ ...prev, [idx]: imgData }));
             success = true;
+
           } catch (err: any) {
-            attempts++;
-            const isQuota = err.message?.includes("429") || err.message?.toLowerCase().includes("quota");
-            
-            if (isQuota) {
-              setQueueStatus(`Hạn ngạch đầy. Đợi 60s để thử lại...`);
-              await new Promise(r => setTimeout(r, 60000));
+            const isQuotaError = err.message?.includes("429") || err.message?.toLowerCase().includes("quota");
+
+            if (isQuotaError && attempts < maxAttempts) {
+              let waitTime = 60;
+              while (waitTime > 0) {
+                setQueueStatus(`Hạn ngạch đầy. Chờ ${waitTime}s để thử lại...`);
+                await new Promise(r => setTimeout(r, 1000));
+                waitTime--;
+              }
             } else {
-              setImageErrorMap(prev => ({ ...prev, [idx]: "Lỗi vẽ ảnh (vĩnh viễn)" }));
+              setImageErrorMap(prev => ({ ...prev, [idx]: isQuotaError ? "Hết hạn ngạch (đã thử lại)" : "Lỗi vẽ ảnh" }));
               break; 
             }
-          }
-        }
-
-        if (success && i < sortedQueue.length - 1) {
-          let timer = 60;
-          while (timer > 0) {
-            setQueueStatus(`Tuân thủ giới hạn miễn phí. Chờ ${timer}s...`);
-            await new Promise(r => setTimeout(r, 1000));
-            timer--;
           }
         }
       }
@@ -125,7 +121,6 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
     setImagesMap({});
     setImageErrorMap({});
     if (isPresentationMode && !isGenerating && slidesRawData.length > 0) {
-      // Dùng timeout nhỏ để đảm bảo slidesRawData đã ổn định
       setTimeout(() => processImageQueue(), 100);
     }
   }, [isPresentationMode, isGenerating, content]);
@@ -137,7 +132,6 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
       return next;
     });
     if (!processingRef.current) {
-      // Dùng timeout để state kịp cập nhật trước khi chạy queue
       setTimeout(() => processImageQueue(), 100);
     }
   };
@@ -266,8 +260,8 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
                   </div>
                 ) : imageErrorMap[currentSlideIndex] ? (
                   <div className="w-1/3 rounded-xl bg-red-50 flex flex-col items-center justify-center text-red-500 p-4 border border-dashed border-red-200">
-                    <p className="text-[9px] font-bold text-center uppercase mb-2">{imageErrorMap[currentSlideIndex]}</p>
-                    <button onClick={() => handleRetry(currentSlideIndex)} className="text-[9px] underline font-bold">Thử lại</button>
+                    <p className="text-sm font-bold text-center uppercase mb-2">{imageErrorMap[currentSlideIndex]}</p>
+                    <button onClick={() => handleRetry(currentSlideIndex)} className="text-xs underline font-bold">Thử lại</button>
                   </div>
                 ) : hasImageTag ? (
                   <div className="w-1/3 rounded-xl bg-slate-100 flex flex-col items-center justify-center text-slate-400 gap-2 border border-dashed border-slate-300">

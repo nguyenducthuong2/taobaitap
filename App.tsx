@@ -5,6 +5,16 @@ import { ExamDisplay } from './components/ExamDisplay';
 import { Grade, QuestionType, Difficulty, ExamRequest, WorkMode } from './types';
 import { generateExamStream } from './services/geminiService';
 
+// Fix: Inlined the AIStudio interface to prevent declaration conflicts with other global type definitions.
+declare global {
+  interface Window {
+    aistudio: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
 const App: React.FC = () => {
   const [request, setRequest] = useState<ExamRequest>({
     mode: WorkMode.Exercise,
@@ -25,6 +35,14 @@ const App: React.FC = () => {
   const handleInputChange = useCallback((field: keyof ExamRequest, value: string | number) => {
     setRequest((prev) => ({ ...prev, [field]: value }));
   }, []);
+
+  const handleOpenKeyDialog = async () => {
+    try {
+      await window.aistudio.openSelectKey();
+    } catch (err) {
+      console.error("Lỗi khi mở trình chọn Key:", err);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!request.topic.trim()) {
@@ -50,7 +68,13 @@ const App: React.FC = () => {
       });
       setGeneratedContent(accumulatedText);
     } catch (err: any) {
-      setError(err.message || "Đã xảy ra lỗi không xác định. Vui lòng thử lại.");
+      if (err.message?.includes("429") && request.mode === WorkMode.presentation) {
+        setError("Hạn ngạch ảnh đã hết. Vui lòng nhấn 'Cấu hình API Key' và chọn một Project trả phí để tạo ảnh không giới hạn.");
+      } else if (err.message?.includes("429")) {
+        setError("Hệ thống đang tạm thời quá tải do giới hạn của API miễn phí. Vui lòng đợi một lát rồi thử lại.");
+      } else {
+        setError(err.message || "Đã xảy ra lỗi không xác định. Vui lòng thử lại.");
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -68,8 +92,19 @@ const App: React.FC = () => {
               <h1 className="text-xl font-bold text-slate-900 tracking-tight uppercase">EDUGEN VN BY NGUYỄN ĐỨC THƯƠNG</h1>
             </div>
           </div>
-          <div className="hidden sm:block text-[10px] font-bold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
-            CỘNG ĐỒNG & MIỄN PHÍ
+          <div className="flex items-center gap-2">
+            {request.mode === WorkMode.presentation && (
+              <button 
+                onClick={handleOpenKeyDialog}
+                className="text-[10px] font-bold text-orange-600 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-200 hover:bg-orange-100 transition-colors flex items-center gap-1.5 animate-pulse"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3y-3z"></path></svg>
+                CẤU HÌNH API KEY (ẢNH)
+              </button>
+            )}
+            <div className="hidden sm:block text-[10px] font-bold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+              CỘNG ĐỒNG & MIỄN PHÍ
+            </div>
           </div>
         </div>
       </header>
@@ -87,9 +122,14 @@ const App: React.FC = () => {
 
           <div className="lg:col-span-8">
             {error && (
-              <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-3 animate-shake">
-                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                 <span className="text-sm">{error}</span>
+              <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center justify-between gap-3 animate-shake">
+                 <div className="flex items-center gap-3">
+                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                   <span className="text-sm">{error}</span>
+                 </div>
+                 {error.includes("Cấu hình API Key") && (
+                   <button onClick={handleOpenKeyDialog} className="text-xs font-bold underline whitespace-nowrap bg-red-100 text-red-800 px-3 py-1 rounded-md">Cấu hình ngay</button>
+                 )}
               </div>
             )}
             
@@ -106,6 +146,7 @@ const App: React.FC = () => {
                 </div>
                 <p className="font-bold text-slate-600 text-lg">Studio Thiết kế AI sẵn sàng</p>
                 <p className="text-sm px-12 text-center mt-2 text-slate-400 max-w-md">Nhập chủ đề bài học và nhấn "Tạo nội dung" để bắt đầu hành trình sáng tạo của bạn.</p>
+                <p className="text-[10px] mt-4 text-orange-500 font-bold italic max-w-md text-center">Mẹo: Với chế độ "Tạo Slide", hãy nhấn "Cấu hình API Key" để có trải nghiệm tạo ảnh tốt nhất.</p>
               </div>
             )}
           </div>

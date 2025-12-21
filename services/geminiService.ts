@@ -1,5 +1,6 @@
 
 // @google/genai Coding Guidelines followed.
+// Fix: Use correct import path for GoogleGenAI
 import { GoogleGenAI } from "@google/genai";
 import { SYSTEM_INSTRUCTION, LESSON_PLAN_INSTRUCTION, PRESENTATION_INSTRUCTION } from "../constants";
 import { ExamRequest, QuestionType, WorkMode } from "../types";
@@ -45,7 +46,7 @@ export const generateExamStream = async (
     }
   } catch (error: any) {
     if (error.message?.includes("429")) {
-      throw new Error("Hệ thống đang tạm thời quá tải do giới hạn của API miễn phí. Vui lòng đợi một lát rồi thử lại.");
+      throw new Error("Lỗi 429: Hết hạn ngạch API.");
     }
     throw error;
   }

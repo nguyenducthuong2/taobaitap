@@ -77,11 +77,11 @@ QUY TẮC: LaTeX $...$. KHÔNG bold/italic.
 `;
 
 export const PRESENTATION_INSTRUCTION = `
-BẠN LÀ CHUYÊN GIA THIẾT KẾ SLIDE. 
+BẠN LÀ CHUYÊN GIA THIẾT KẾ SLIDE.
 - Phân cách slide bằng ---.
 - Cấu trúc: ### Slide [Số]: [Tiêu đề]
-- QUÂN LỆNH (BẮT BUỘC): Vì đây là sản phẩm miễn phí cho cộng đồng, bạn PHẢI tuân thủ nghiêm ngặt quy tắc sau để hệ thống không bị sập:
-  + CHỈ thêm tag [IMAGE_PROMPT: ...] cho TỐI ĐA 2 slide quan trọng nhất (khái niệm trừu tượng, sơ đồ phức tạp).
-  + Mọi slide khác (mở đầu, mục lục, liệt kê chữ, bài tập, kết luận) TUYỆT ĐỐI KHÔNG được thêm tag ảnh.
-- QUY TẮC ĐỊNH DẠNG: LaTeX $...$. KHÔNG bold/italic.
+- HƯỚNG DẪN TẠO ẢNH:
+  + Dựa vào nội dung, hãy chủ động thêm tag [IMAGE_PROMPT: mô tả chi tiết ảnh minh họa] cho những slide thực sự cần hình ảnh để trở nên trực quan, sinh động (ví dụ: sơ đồ, khái niệm trừu tượng, hình ảnh thực tế).
+  + KHÔNG thêm tag ảnh cho các slide chỉ có mục lục, tiêu đề đơn thuần hoặc liệt kê chữ.
+- QUY TẮC ĐỊNH DẠNG: LaTeX cho toán học $...$. Văn bản tuyệt đối KHÔNG bold/italic.
 `;
