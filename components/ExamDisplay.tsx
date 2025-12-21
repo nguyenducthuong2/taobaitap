@@ -30,6 +30,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   const [isProcessingImages, setIsProcessingImages] = useState(false);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [imagesMap, setImagesMap] = useState<Record<number, string>>({});
+  const [imageErrorMap, setImageErrorMap] = useState<Record<number, string>>({});
 
   const slidesRawData = useMemo(() => {
     if (!isPresentationMode) return [];
@@ -40,7 +41,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
     if (!isPresentationMode || isGenerating || slidesRawData.length === 0) return;
     
     const prompts = slidesRawData.map((s, idx) => ({ idx, text: s })).filter(s => s.text.includes('[IMAGE_PROMPT:'));
-    const missingIndices = prompts.filter(p => !imagesMap[p.idx]);
+    const missingIndices = prompts.filter(p => !imagesMap[p.idx] && !imageErrorMap[p.idx]);
 
     if (missingIndices.length === 0) {
       setIsProcessingImages(false);
@@ -54,11 +55,22 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
         if (match && match[1]) {
           try {
             const imgData = await generateImageFromAI(match[1]);
-            if (imgData) {
-              setImagesMap(prev => ({ ...prev, [item.idx]: imgData }));
-            }
-          } catch (err) {
+            setImagesMap(prev => ({ ...prev, [item.idx]: imgData }));
+            setImageErrorMap(prev => {
+              const newErrors = { ...prev };
+              delete newErrors[item.idx];
+              return newErrors;
+            });
+          } catch (err: any) {
             console.error("Lỗi tạo ảnh cho slide", item.idx, err);
+            const errorMessage = err.message || "Lỗi không xác định.";
+            if (errorMessage.includes("API Key")) {
+               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Lỗi API Key. Vui lòng kiểm tra lại cấu hình." }));
+            } else if (errorMessage.toLowerCase().includes("quota")) {
+               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Đã hết hạn ngạch miễn phí cho mô hình ảnh." }));
+            } else {
+               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Không thể tạo ảnh. Vui lòng thử lại." }));
+            }
           }
         }
       }
@@ -66,7 +78,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
     };
     
     processImages();
-  }, [isGenerating, isPresentationMode, slidesRawData]);
+  }, [isGenerating, isPresentationMode, slidesRawData, imagesMap, imageErrorMap]);
 
   const NLS_PATTERN = /(\d+\.\d+\.[A-Z]{2,3}\d+[a-z]?)/g;
 
@@ -327,6 +339,12 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
                 {imagesMap[currentSlideIndex] ? (
                   <div className="w-1/3 rounded-xl overflow-hidden shadow-md">
                     <img src={imagesMap[currentSlideIndex]} className="w-full h-full object-cover" alt="AI slide" />
+                  </div>
+                ) : imageErrorMap[currentSlideIndex] ? (
+                  <div className="w-1/3 rounded-xl bg-red-50 flex flex-col items-center justify-center text-red-500 p-2 gap-2 border border-dashed border-red-300">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-center">LỖI TẠO ẢNH</span>
+                    <p className="text-[9px] text-red-500 text-center">{imageErrorMap[currentSlideIndex]}</p>
                   </div>
                 ) : slidesRawData[currentSlideIndex].includes('[IMAGE_PROMPT:') ? (
                   <div className="w-1/3 rounded-xl bg-slate-100 flex flex-col items-center justify-center text-slate-400 gap-2 border border-dashed border-slate-300">

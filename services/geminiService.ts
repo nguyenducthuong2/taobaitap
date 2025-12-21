@@ -71,8 +71,10 @@ export const generateExamStream = async (
   }
 };
 
-export const generateImageFromAI = async (prompt: string): Promise<string | null> => {
-  if (!process.env.API_KEY) return null;
+export const generateImageFromAI = async (prompt: string): Promise<string> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API Key không được cấu hình để tạo hình ảnh.");
+  }
   
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -91,9 +93,9 @@ export const generateImageFromAI = async (prompt: string): Promise<string | null
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    return null;
+    throw new Error("AI không trả về hình ảnh. Yêu cầu của bạn có thể đã bị từ chối.");
   } catch (error) {
     console.error("Image generation failed:", error);
-    return null;
+    throw error;
   }
 };
