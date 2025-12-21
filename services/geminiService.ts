@@ -1,37 +1,47 @@
 
+
 // @google/genai Coding Guidelines followed.
-// Fix: Use correct import path for GoogleGenAI
 import { GoogleGenAI } from "@google/genai";
 import { SYSTEM_INSTRUCTION, LESSON_PLAN_INSTRUCTION, PRESENTATION_INSTRUCTION } from "../constants";
 import { ExamRequest, QuestionType, WorkMode } from "../types";
+
+const getApiKey = (): string => {
+  const key = process.env.API_KEY;
+  if (!key) {
+    throw new Error("Không tìm thấy API Key hệ thống. Vui lòng kiểm tra lại cấu hình.");
+  }
+  return key;
+};
 
 export const generateExamStream = async (
   request: ExamRequest,
   onChunk: (text: string) => void
 ): Promise<void> => {
-  if (!process.env.API_KEY) {
-    throw new Error("Không tìm thấy API Key hệ thống.");
-  }
-  
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
 
   let systemInstruction = SYSTEM_INSTRUCTION;
   let userPrompt = '';
 
+  const additionalInstructions = request.additionalInstructions 
+    ? `\n\nYÊU CẦU BỔ SUNG QUAN TRỌNG: ${request.additionalInstructions}` 
+    : '';
+
   if (request.mode === WorkMode.lesson_plan) {
     systemInstruction = LESSON_PLAN_INSTRUCTION;
-    userPrompt = `CHẾ ĐỘ: Giáo án NLS. Môn: ${request.subject}, Lớp: ${request.grade}, Bài: ${request.topic}. Dữ liệu: ${request.specificRequirements || 'N/A'}`;
+    userPrompt = `CHẾ ĐỘ: Giáo án NLS. Môn: ${request.subject}, Lớp: ${request.grade}, Bài: ${request.topic}. Dữ liệu: ${request.specificRequirements || 'N/A'}${additionalInstructions}`;
   } else if (request.mode === WorkMode.presentation) {
     systemInstruction = PRESENTATION_INSTRUCTION;
-    userPrompt = `CHẾ ĐỘ: Thiết kế Slide. Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}. Dữ liệu: ${request.specificRequirements || 'N/A'}`;
+    userPrompt = `CHẾ ĐỘ: Thiết kế Slide. Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}. Dữ liệu giáo án: ${request.specificRequirements || 'N/A'}${additionalInstructions}`;
   } else {
     const isLiterature = request.subject === 'Ngữ văn / Tiếng Việt';
-    userPrompt = `Tạo bài tập: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}, Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}. Dữ liệu: ${request.specificRequirements || ''}`;
+    userPrompt = `Tạo bài tập: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}, Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}. Dữ liệu: ${request.specificRequirements || ''}${additionalInstructions}`;
   }
 
   try {
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-flash-lite-latest', 
+      // FIX: Upgraded model to the recommended 'gemini-3-flash-preview' for better performance and adherence to guidelines.
+      model: 'gemini-3-flash-preview', 
       contents: userPrompt,
       config: {
         systemInstruction: systemInstruction,
@@ -46,37 +56,11 @@ export const generateExamStream = async (
     }
   } catch (error: any) {
     if (error.message?.includes("429")) {
-      throw new Error("Lỗi 429: Hết hạn ngạch API.");
+      throw new Error("Lỗi 429: Hết hạn ngạch API. Hệ thống miễn phí có thể đang quá tải, vui lòng thử lại sau ít phút.");
     }
-    throw error;
-  }
-};
-
-export const generateImageFromAI = async (prompt: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key missing");
-  }
-  
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: `${prompt}, educational illustration style, clean and professional` }],
-      },
-      config: {
-        imageConfig: { aspectRatio: "16:9" }
-      }
-    });
-
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-      }
+     if (error.message?.toLowerCase().includes("api key not valid")) {
+      throw new Error("API Key hệ thống không hợp lệ. Vui lòng liên hệ quản trị viên.");
     }
-    throw new Error("Không nhận được dữ liệu ảnh.");
-  } catch (error: any) {
-    console.error("Image API error:", error);
     throw error;
   }
 };

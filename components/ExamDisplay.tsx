@@ -1,139 +1,98 @@
 
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import pptxgen from "pptxgenjs";
-import { generateImageFromAI } from '../services/geminiService';
 import { 
   Document, 
   Packer, 
   Paragraph, 
-  TextRun, 
   HeadingLevel,
   AlignmentType,
-  Table,
-  TableRow,
-  TableCell,
-  WidthType,
-  BorderStyle,
-  VerticalAlign
+  TextRun,
 } from "docx";
+import { ExamRequest, WorkMode } from '../types';
 
 interface ExamDisplayProps {
   content: string;
   isPresentationMode?: boolean;
   isGenerating?: boolean;
+  request: ExamRequest;
 }
 
-export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentationMode, isGenerating }) => {
-  const [isExporting, setIsExporting] = useState(false);
-  const [isProcessingImages, setIsProcessingImages] = useState(false);
-  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
-  const [imagesMap, setImagesMap] = useState<Record<number, string>>({});
-  const [imageErrorMap, setImageErrorMap] = useState<Record<number, string>>({});
-  const [queueStatus, setQueueStatus] = useState<string>("");
-  
-  const processingRef = useRef<boolean>(false);
+const THEMES: { [key: string]: { bg: string; title: string; text: string; highlight: string; slideBg: string; } } = {
+  'Xanh Dương': { bg: 'bg-blue-50', title: 'text-blue-800', text: 'text-slate-700', highlight: 'text-blue-600', slideBg: 'bg-white' },
+  'Xanh Lá': { bg: 'bg-green-50', title: 'text-green-800', text: 'text-slate-700', highlight: 'text-green-600', slideBg: 'bg-white' },
+  'Cam': { bg: 'bg-orange-50', title: 'text-orange-800', text: 'text-slate-700', highlight: 'text-orange-600', slideBg: 'bg-white' },
+  'Tím': { bg: 'bg-purple-50', title: 'text-purple-800', text: 'text-slate-700', highlight: 'text-purple-600', slideBg: 'bg-white' },
+  'Default': { bg: 'bg-slate-50', title: 'text-blue-700', text: 'text-slate-800', highlight: 'text-blue-600', slideBg: 'bg-white' }
+};
 
+const PPTX_THEMES: { [key: string]: { slideBg: string; title: string; text: string; highlight: string; } } = {
+  'Xanh Dương': { slideBg: 'F0F9FF', title: '1E40AF', text: '334155', highlight: '2563EB' },
+  'Xanh Lá': { slideBg: 'F0FDF4', title: '166534', text: '334155', highlight: '16A34A' },
+  'Cam': { slideBg: 'FFF7ED', title: '9A3412', text: '334155', highlight: 'EA580C' },
+  'Tím': { slideBg: 'FBF5FF', title: '6B21A8', text: '334155', highlight: '9333EA' },
+  'Default': { slideBg: 'F8FAFC', title: '1D4ED8', text: '334155', highlight: '2563EB' }
+};
+
+export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentationMode, isGenerating, request }) => {
+  const [isExporting, setIsExporting] = useState(false);
+  const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+  const [theme, setTheme] = useState('Xanh Dương');
+  const [slidesContent, setSlidesContent] = useState('');
+
+  useEffect(() => {
+    if (isPresentationMode) {
+      const themeMatch = content.match(/\[THEME:\s*([^\]]+)\]/);
+      const currentTheme = themeMatch ? themeMatch[1].trim() : 'Xanh Dương';
+      setTheme(currentTheme);
+      const contentWithoutTheme = content.replace(/\[THEME:\s*([^\]]+)\]\s*/, '');
+      setSlidesContent(contentWithoutTheme);
+    } else {
+      setSlidesContent(content);
+    }
+    setCurrentSlideIndex(0);
+  }, [isPresentationMode, isGenerating, content]);
+  
   const slidesRawData = useMemo(() => {
     if (!isPresentationMode) return [];
-    return content.split(/---/).filter(s => s.trim().length > 5);
-  }, [content, isPresentationMode]);
+    return slidesContent.split(/---/).filter(s => s.trim().length > 5);
+  }, [slidesContent, isPresentationMode]);
 
   const cleanSlideText = (text: string) => {
     if (!text) return "";
     return text.replace(/\$/g, '').trim();
   };
+  
+  const currentThemeColors = THEMES[theme] || THEMES['Default'];
+  const pptxColors = PPTX_THEMES[theme] || PPTX_THEMES['Default'];
 
-  const processImageQueue = async () => {
-    if (processingRef.current || isGenerating || slidesRawData.length === 0) return;
-    
-    const indicesToProcess = slidesRawData
-      .map((s, idx) => ({ idx, text: s }))
-      .filter(s => s.text.includes('[IMAGE_PROMPT:'))
-      .map(s => s.idx)
-      .filter(idx => !imagesMap[idx] && !imageErrorMap[idx]);
-
-    if (indicesToProcess.length === 0) {
-      setQueueStatus("");
-      return;
-    }
-
-    processingRef.current = true;
-    setIsProcessingImages(true);
-
-    const sortedQueue = [...indicesToProcess].sort((a, b) => {
-      if (a === currentSlideIndex) return -1;
-      if (b === currentSlideIndex) return 1;
-      return a - b;
-    });
-
-    for (let i = 0; i < sortedQueue.length; i++) {
-      const idx = sortedQueue[i];
-      const slideText = slidesRawData[idx];
-      const match = slideText.match(/\[IMAGE_PROMPT:\s*(.*?)\]/);
-      
-      if (match && match[1]) {
-        let success = false;
-        let attempts = 0;
-        const maxAttempts = 3;
-
-        while (!success && attempts < maxAttempts) {
-          attempts++;
-          try {
-            setImageErrorMap(prev => {
-              const next = { ...prev };
-              delete next[idx];
-              return next;
-            });
-            setQueueStatus(`Đang vẽ ảnh slide ${idx + 1} (Lần ${attempts}/${maxAttempts})...`);
-            
-            const imgData = await generateImageFromAI(match[1]);
-            setImagesMap(prev => ({ ...prev, [idx]: imgData }));
-            success = true;
-
-          } catch (err: any) {
-            const isQuotaError = err.message?.includes("429") || err.message?.toLowerCase().includes("quota");
-
-            if (isQuotaError && attempts < maxAttempts) {
-              let waitTime = 60;
-              while (waitTime > 0) {
-                setQueueStatus(`Hạn ngạch đầy. Chờ ${waitTime}s để thử lại...`);
-                await new Promise(r => setTimeout(r, 1000));
-                waitTime--;
-              }
-            } else {
-              setImageErrorMap(prev => ({ ...prev, [idx]: isQuotaError ? "Hết hạn ngạch (đã thử lại)" : "Lỗi vẽ ảnh" }));
-              break; 
-            }
-          }
-        }
-      }
-    }
-
-    setIsProcessingImages(false);
-    processingRef.current = false;
-    setQueueStatus(indicesToProcess.length > 0 ? "Hoàn tất hàng đợi ảnh!" : "");
+  type PptxTextObject = {
+    text: string;
+    options?: {
+      bold?: boolean;
+      color?: string;
+      bullet?: boolean;
+      breakLine?: boolean;
+    };
   };
 
-  useEffect(() => {
-    setCurrentSlideIndex(0);
-    setImagesMap({});
-    setImageErrorMap({});
-    if (isPresentationMode && !isGenerating && slidesRawData.length > 0) {
-      setTimeout(() => processImageQueue(), 100);
-    }
-  }, [isPresentationMode, isGenerating, content]);
-
-  const handleRetry = (idx: number) => {
-    setImageErrorMap(prev => {
-      const next = { ...prev };
-      delete next[idx];
-      return next;
+  const parseTextForPptx = (line: string, defaultColor: string, highlightColor: string): PptxTextObject[] => {
+    const parts = cleanSlideText(line).split('**');
+    const textObjects: PptxTextObject[] = [];
+    parts.forEach((part, index) => {
+      if (part) {
+        textObjects.push({
+          text: part,
+          options: {
+            bold: index % 2 !== 0,
+            color: index % 2 !== 0 ? highlightColor : defaultColor,
+          }
+        });
+      }
     });
-    if (!processingRef.current) {
-      setTimeout(() => processImageQueue(), 100);
-    }
+    return textObjects;
   };
 
   const handleDownloadPptx = async () => {
@@ -143,38 +102,45 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
       const pres = new PptxGenConstructor();
       pres.layout = 'LAYOUT_16x9';
 
-      slidesRawData.forEach((slideRaw, idx) => {
+      slidesRawData.forEach((slideRaw) => {
         const slide = pres.addSlide();
+        slide.background = { color: pptxColors.slideBg };
+
         const lines = slideRaw.trim().split('\n');
         let title = "BÀI GIẢNG";
-        let bodyLines: string[] = [];
+        const bodyLines: string[] = [];
         
         lines.forEach(l => {
           const cleanLine = l.trim();
           if (cleanLine.startsWith('### ')) {
-            title = cleanSlideText(cleanLine.replace('### ', ''));
-          } else if (cleanLine && !cleanLine.includes('[IMAGE_PROMPT')) {
-            bodyLines.push(cleanSlideText(cleanLine));
+            title = cleanSlideText(cleanLine.replace(/### Slide \d+:/, ''));
+          } else if (cleanLine) {
+            bodyLines.push(cleanLine);
           }
         });
 
-        slide.background = { fill: "F8FAFC" };
-        slide.addText(title.toUpperCase(), { 
-          x: 0.5, y: 0.2, w: 9.0, h: 0.8, fontSize: 22, bold: true, color: '1E3A8A', align: 'center', valign: 'middle' 
+        slide.addText(parseTextForPptx(title, pptxColors.title, pptxColors.highlight), { 
+          x: 0.5, y: 0.25, w: 9.0, h: 1.0, fontSize: 32, bold: true, color: pptxColors.title, align: 'center', valign: 'middle' 
         });
-
-        const hasImg = !!imagesMap[idx];
-        const contentW = hasImg ? 5.8 : 9.0;
         
-        slide.addText(bodyLines.map(t => ({ text: t, options: { bullet: true, fontSize: 15, color: '334155', breakLine: true } })), { 
-          x: 0.5, y: 1.2, w: contentW, h: 3.8, valign: 'top', autoFit: true 
+        const bodyObjects: PptxTextObject[] = bodyLines.flatMap(line => {
+          const lineParts = parseTextForPptx(line, pptxColors.text, pptxColors.highlight);
+          if (lineParts.length > 0) {
+            lineParts[0].options = { ...lineParts[0].options, bullet: true };
+            return [...lineParts, { text: '', options: { breakLine: true } }];
+          }
+          return [];
         });
 
-        if (hasImg) {
-          slide.addImage({ data: imagesMap[idx], x: 6.5, y: 1.2, w: 3.0, h: 3.5, sizing: { type: 'contain' } });
+        if (bodyObjects.length > 0 && bodyObjects[bodyObjects.length - 1].options?.breakLine) {
+          bodyObjects.pop();
         }
+        
+        slide.addText(bodyObjects, { 
+          x: 0.75, y: 1.5, w: 8.5, h: 3.5, valign: 'top', autoFit: true, fontSize: 18 
+        });
 
-        slide.addText("HỆ SINH THÁI GIÁO DỤC SỐ - EDUGEN VN", { x: 0, y: 5.2, w: 10, h: 0.3, fontSize: 8, color: '94A3B8', align: 'center' });
+        slide.addText("HỆ SINH THÁI GIÁO DỤC SỐ - EDUGEN VN", { x: 0, y: 5.2, w: 10, h: 0.3, fontSize: 10, color: '94A3B8', align: 'center' });
       });
       
       await pres.writeFile({ fileName: `EduGen_Slide_${Date.now()}.pptx` });
@@ -186,25 +152,57 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   const handleDownloadWord = async () => {
     setIsExporting(true);
     try {
+      const docTitle = request.mode === WorkMode.lesson_plan
+        ? "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)"
+        : "BÀI TẬP VÀ LỜI GIẢI CHI TIẾT";
+
+      const createParagraphsFromLine = (line: string): Paragraph[] => {
+        const trimmedLine = line.trim();
+        if (trimmedLine === '') {
+          return [new Paragraph({ text: '' })];
+        }
+
+        const parts = trimmedLine.split(/(\$.*?\$)/g).filter(part => part);
+        
+        const children = parts.map(part => {
+          if (part.startsWith('$') && part.endsWith('$')) {
+            return new TextRun({ text: part });
+          }
+          return new TextRun({ text: part });
+        });
+
+        return [new Paragraph({ children, spacing: { before: 120 } })];
+      };
+
       const doc = new Document({
         sections: [{
           children: [
-            new Paragraph({ text: "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)", heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
-            ...content.split('\n').filter(l => !l.includes('[IMAGE_PROMPT')).map(l => new Paragraph({ text: l.replace(/\$/g, '').trim(), spacing: { before: 120 } }))
+            new Paragraph({ text: docTitle, heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
+            ...content.split('\n').flatMap(createParagraphsFromLine)
           ]
         }]
       });
+
       const blob = await Packer.toBlob(doc);
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `GiaoAn_EduGen_${Date.now()}.docx`;
+      const fileName = request.mode === WorkMode.lesson_plan 
+        ? `GiaoAn_EduGen_${Date.now()}.docx` 
+        : `BaiTap_EduGen_${Date.now()}.docx`;
+      link.download = fileName;
       link.click();
     } catch (err) {
       console.error(err);
-    } finally { setIsExporting(false); }
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const markdownComponents = {
+    h3: ({...props}) => <h3 className={`text-2xl font-bold ${currentThemeColors.title} mb-4 border-b pb-3`} {...props} />,
+    strong: ({...props}) => <strong className={`${currentThemeColors.highlight} font-bold`} {...props} />,
+    p: ({...props}) => <p className={`${currentThemeColors.text}`} {...props} />,
+    li: ({...props}) => <li className={`${currentThemeColors.text}`} {...props} />,
     text: ({ children }: any) => {
       if (typeof children !== 'string') return children;
       return children.replace(/\$/g, '');
@@ -212,7 +210,6 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   };
 
   const currentSlide = slidesRawData.length > 0 ? slidesRawData[currentSlideIndex] : null;
-  const hasImageTag = currentSlide?.includes('[IMAGE_PROMPT:');
 
   return (
     <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col h-[750px] lg:h-[900px]">
@@ -223,53 +220,26 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
           </div>
           <div className="flex flex-col">
             <span className="font-bold text-slate-700 leading-none">Studio EduGen</span>
-            {queueStatus && (
-              <span className="text-[10px] font-bold text-orange-600 animate-pulse mt-1 uppercase flex items-center gap-1">
-                <span className="w-1.5 h-1.5 bg-orange-600 rounded-full"></span>
-                {queueStatus}
-              </span>
-            )}
           </div>
         </div>
         <button
           onClick={isPresentationMode ? handleDownloadPptx : handleDownloadWord}
-          disabled={isExporting || isGenerating}
+          disabled={isExporting || isGenerating || (isPresentationMode && slidesRawData.length === 0)}
           className={`px-5 py-2 rounded-xl text-white font-bold text-sm shadow-md transition-all ${isPresentationMode ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'} disabled:bg-slate-300`}
         >
           {isExporting ? "ĐANG XUẤT..." : isPresentationMode ? "TẢI SLIDE (PPTX)" : "TẢI WORD"}
         </button>
       </div>
 
-      <div className="flex-grow overflow-y-auto bg-slate-50 p-6 custom-scrollbar">
+      <div className={`flex-grow overflow-y-auto p-6 custom-scrollbar transition-colors duration-300 ${isPresentationMode ? currentThemeColors.bg : 'bg-slate-50'}`}>
         {isPresentationMode && slidesRawData.length > 0 && currentSlide ? (
           <div className="flex flex-col items-center">
-            <div className="w-full max-w-4xl aspect-[16/9] bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col p-8 relative">
-              <h4 className="text-2xl font-bold text-blue-700 mb-6 border-b pb-4">
-                {cleanSlideText(currentSlide.match(/### (.*)/)?.[1] || "Bài giảng")}
-              </h4>
-              <div className="flex gap-8 flex-grow">
-                <div className={`${hasImageTag || imagesMap[currentSlideIndex] ? 'w-2/3' : 'w-full'} flex-grow prose prose-slate`}>
+            <div className={`w-full max-w-4xl aspect-[16/9] rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col p-8 relative transition-colors duration-300 ${currentThemeColors.slideBg}`}>
+                <div className="w-full flex-grow prose prose-slate max-w-none">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {currentSlide.replace(/### .*\n/, '').replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
+                    {currentSlide}
                   </ReactMarkdown>
                 </div>
-                
-                {imagesMap[currentSlideIndex] ? (
-                  <div className="w-1/3 rounded-xl overflow-hidden shadow-md bg-slate-50">
-                    <img src={imagesMap[currentSlideIndex]} className="w-full h-full object-cover" alt="AI slide" />
-                  </div>
-                ) : imageErrorMap[currentSlideIndex] ? (
-                  <div className="w-1/3 rounded-xl bg-red-50 flex flex-col items-center justify-center text-red-500 p-4 border border-dashed border-red-200">
-                    <p className="text-sm font-bold text-center uppercase mb-2">{imageErrorMap[currentSlideIndex]}</p>
-                    <button onClick={() => handleRetry(currentSlideIndex)} className="text-xs underline font-bold">Thử lại</button>
-                  </div>
-                ) : hasImageTag ? (
-                  <div className="w-1/3 rounded-xl bg-slate-100 flex flex-col items-center justify-center text-slate-400 gap-2 border border-dashed border-slate-300">
-                    <svg className="animate-spin h-6 w-6 text-slate-300" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <span className="text-[10px] font-bold uppercase">Đang xếp hàng vẽ...</span>
-                  </div>
-                ) : null}
-              </div>
             </div>
             <div className="mt-6 flex items-center gap-4">
               <button onClick={() => setCurrentSlideIndex(p => Math.max(0, p - 1))} disabled={currentSlideIndex === 0} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50 disabled:opacity-50">◀</button>
@@ -280,7 +250,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
         ) : (
           <div className="max-w-4xl mx-auto bg-white p-10 rounded-xl shadow border prose prose-slate">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {content.replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
+              {content}
             </ReactMarkdown>
           </div>
         )}

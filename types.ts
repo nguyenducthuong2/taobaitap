@@ -15,11 +15,11 @@ export enum Grade {
 }
 
 export enum QuestionType {
-  MultipleChoice = 'Trắc nghiệm 4 phương án',
-  TrueFalse = 'Đúng-Sai',
-  ShortAnswer = 'Trả lời ngắn',
+  MultipleChoice = 'Trắc nghiệm (4 lựa chọn)',
+  TrueFalse = 'Trắc nghiệm Đúng - Sai',
+  ShortAnswer = 'Điền đáp án / Trả lời ngắn',
   Essay = 'Bài tự luận',
-  Mixed = 'Kết hợp',
+  Mixed = 'Kết hợp (Khuyên dùng)',
 }
 
 export enum Difficulty {
