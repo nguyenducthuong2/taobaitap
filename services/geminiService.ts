@@ -9,7 +9,7 @@ export const generateExamStream = async (
   onChunk: (text: string) => void
 ): Promise<void> => {
   if (!process.env.API_KEY) {
-    throw new Error("API Key is missing.");
+    throw new Error("Không tìm thấy API Key hệ thống.");
   }
   
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -19,44 +19,22 @@ export const generateExamStream = async (
 
   if (request.mode === WorkMode.lesson_plan) {
     systemInstruction = LESSON_PLAN_INSTRUCTION;
-    userPrompt = `
-    [MASTER DIRECTIVE] CHẾ ĐỘ: Soạn Giáo án NLS.
-    - Môn: ${request.subject}, Lớp: ${request.grade}, Bài: ${request.topic}
-    - Quy tắc: Mọi công thức toán học phải là mã LaTeX nằm trong cặp dấu $ đơn, văn bản KHÔNG định dạng bold/italic.
-    - Tài liệu nguồn: 
-    ${request.specificRequirements || 'Người dùng chưa cung cấp file, hãy soạn thảo dựa trên kiến thức chuẩn.'}
-    `;
+    userPrompt = `CHẾ ĐỘ: Giáo án NLS. Môn: ${request.subject}, Lớp: ${request.grade}, Bài: ${request.topic}. Dữ liệu: ${request.specificRequirements || 'N/A'}`;
   } else if (request.mode === WorkMode.presentation) {
     systemInstruction = PRESENTATION_INSTRUCTION;
-    userPrompt = `
-    [MASTER DIRECTIVE: CONTENT-BASED DESIGNER]
-    YÊU CẦU: Thiết kế Slide Bài Giảng DỰA TRÊN TÀI LIỆU NGUỒN.
-    - Đối tượng: Học sinh lớp ${request.grade}, Môn ${request.subject}
-    - Chủ đề chính: ${request.topic}
-    - Quy tắc: Sử dụng LaTeX $ (dấu đô la đơn) cho toán học, văn bản thuần túy hoàn toàn không định dạng Markdown.
-    
-    TÀI LIỆU NGUỒN CẦN CHUYỂN HÓA:
-    ${request.specificRequirements || 'KHÔNG CÓ TÀI LIỆU NGUỒN. Hãy dựa vào chủ đề để tạo bài giảng chuẩn.'}
-    `;
+    userPrompt = `CHẾ ĐỘ: Thiết kế Slide. Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}. Dữ liệu: ${request.specificRequirements || 'N/A'}`;
   } else {
     const isLiterature = request.subject === 'Ngữ văn / Tiếng Việt';
-    userPrompt = `
-      Tạo bài tập:
-      - Môn: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}
-      - Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}
-      - YÊU CẦU QUAN TRỌNG: Hiển thị MỌI công thức/biểu thức toán học bằng mã LaTeX trong dấu $ đơn (Ví dụ: $x+y=1$). Văn bản KHÔNG ĐƯỢC định dạng in đậm hay in nghiêng, hãy viết bình thường.
-      - Nguồn dữ liệu: ${request.specificRequirements || ''}
-    `;
+    userPrompt = `Tạo bài tập: ${request.subject}, Lớp: ${request.grade}, Chủ đề: ${request.topic}, Loại: ${request.type}, Mức độ: ${request.difficulty}, Số câu: ${isLiterature ? '1' : request.questionCount}. Dữ liệu: ${request.specificRequirements || ''}`;
   }
 
   try {
     const responseStream = await ai.models.generateContentStream({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-flash-lite-latest', 
       contents: userPrompt,
       config: {
         systemInstruction: systemInstruction,
-        temperature: 0.2,
-        thinkingConfig: { thinkingBudget: 4000 },
+        temperature: 0.1,
       },
     });
 
@@ -65,8 +43,10 @@ export const generateExamStream = async (
         onChunk(chunk.text);
       }
     }
-  } catch (error) {
-    console.error("Error generating content:", error);
+  } catch (error: any) {
+    if (error.message?.includes("429")) {
+      throw new Error("Hệ thống đang tạm thời quá tải do giới hạn của API miễn phí. Vui lòng đợi một lát rồi thử lại.");
+    }
     throw error;
   }
 };
@@ -78,11 +58,10 @@ export const generateImageFromAI = async (prompt: string): Promise<string> => {
   
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    // Prompt tối giản để AI xử lý nhanh hơn
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: `${prompt}, educational style, clean graphic` }],
+        parts: [{ text: `${prompt}, educational illustration style, clean and professional` }],
       },
       config: {
         imageConfig: { aspectRatio: "16:9" }
@@ -94,8 +73,8 @@ export const generateImageFromAI = async (prompt: string): Promise<string> => {
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("Empty image");
-  } catch (error) {
+    throw new Error("Không nhận được dữ liệu ảnh.");
+  } catch (error: any) {
     console.error("Image API error:", error);
     throw error;
   }
