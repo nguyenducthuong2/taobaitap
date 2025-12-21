@@ -55,7 +55,7 @@ export const generateExamStream = async (
       contents: userPrompt,
       config: {
         systemInstruction: systemInstruction,
-        temperature: 0.2, // Giảm temperature để tăng tính ổn định của định dạng
+        temperature: 0.2,
         thinkingConfig: { thinkingBudget: 4000 },
       },
     });
@@ -73,15 +73,16 @@ export const generateExamStream = async (
 
 export const generateImageFromAI = async (prompt: string): Promise<string> => {
   if (!process.env.API_KEY) {
-    throw new Error("API Key không được cấu hình để tạo hình ảnh.");
+    throw new Error("API Key missing");
   }
   
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // Prompt tối giản để AI xử lý nhanh hơn
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: `${prompt}, high quality educational graphic, clean, 16:9` }],
+        parts: [{ text: `${prompt}, educational style, clean graphic` }],
       },
       config: {
         imageConfig: { aspectRatio: "16:9" }
@@ -93,9 +94,9 @@ export const generateImageFromAI = async (prompt: string): Promise<string> => {
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
-    throw new Error("AI không trả về hình ảnh. Yêu cầu của bạn có thể đã bị từ chối.");
+    throw new Error("Empty image");
   } catch (error) {
-    console.error("Image generation failed:", error);
+    console.error("Image API error:", error);
     throw error;
   }
 };
