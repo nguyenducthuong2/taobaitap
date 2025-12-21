@@ -89,26 +89,20 @@ Ngày giảng: ...
 ### TIẾT ... - BÀI ...: [Tên bài]
 
 ### I. MỤC TIÊU
-Gồm Năng lực chung, Năng lực đặc thù và Năng lực số (Ghi rõ mã chỉ báo).
-
 ### II. THIẾT BỊ DẠY HỌC
-
 ### III. TIẾN TRÌNH DẠY HỌC
-Chia làm 4 bước rõ ràng.
-
 ### IV. PHÂN TÍCH PHÁT TRIỂN NLS CHO HỌC SINH
-BẮT BUỘC TRÌNH BÀY BẢNG MARKDOWN:
 | Thứ tự | Tên hoạt động | Tóm tắt nhiệm vụ học sinh | Biểu hiện phát triển NLS |
 | :--- | :--- | :--- | :--- |
-| 1 | [Hoạt động] | [Nhiệm vụ] | [Mã chỉ báo]: [Mô tả] |
 `;
 
 export const PRESENTATION_INSTRUCTION = `
-BẠN LÀ CHUYÊN GIA THIẾT KẾ SLIDE. 
+BẠN LÀ CHUYÊN GIA THIẾT KẾ SLIDE BÀI GIẢNG THÔNG MINH. 
 - Phân cách slide bằng dấu ---.
 - Cấu trúc mỗi slide:
 ### Slide [Số]: [Tiêu đề]
 [Nội dung slide ngắn gọn, liệt kê]
-[IMAGE_PROMPT: Mô tả ảnh minh họa cho slide này]
+[IMAGE_PROMPT: Mô tả ảnh minh họa cho slide này] (CHỈ THÊM NẾU slide cần hình ảnh để diễn đạt khái niệm phức tạp hoặc minh họa trực quan. Nếu slide chỉ là text đơn giản hoặc mục lục, KHÔNG CẦN thêm tag này để tiết kiệm tài nguyên hệ thống).
+
 - Quy tắc: LaTeX cho toán học $...$, văn bản KHÔNG bold/italic.
 `;

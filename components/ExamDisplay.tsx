@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import pptxgen from "pptxgenjs";
@@ -31,39 +31,62 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [imagesMap, setImagesMap] = useState<Record<number, string>>({});
   const [imageErrorMap, setImageErrorMap] = useState<Record<number, string>>({});
+  const [queueStatus, setQueueStatus] = useState<string>("");
+  
+  const processingRef = useRef<boolean>(false);
 
   const slidesRawData = useMemo(() => {
     if (!isPresentationMode) return [];
     return content.split(/---/).filter(s => s.trim().length > 5);
   }, [content, isPresentationMode]);
 
-  // Bộ lọc xóa sạch dấu $ cho Slide
   const cleanSlideText = (text: string) => {
     if (!text) return "";
     return text.replace(/\$/g, '').trim();
   };
 
-  const processImages = async (indicesToProcess: number[]) => {
-    if (indicesToProcess.length === 0) return;
+  const processImageQueue = async () => {
+    if (processingRef.current || isGenerating || slidesRawData.length === 0) return;
     
+    // Tìm các slide CÓ tag [IMAGE_PROMPT] mà chưa có ảnh
+    const indicesToProcess = slidesRawData
+      .map((s, idx) => ({ idx, text: s }))
+      .filter(s => s.text.includes('[IMAGE_PROMPT:'))
+      .map(s => s.idx)
+      .filter(idx => !imagesMap[idx]);
+
+    if (indicesToProcess.length === 0) {
+      setQueueStatus("");
+      return;
+    }
+
+    processingRef.current = true;
     setIsProcessingImages(true);
-    for (let i = 0; i < indicesToProcess.length; i++) {
-      const idx = indicesToProcess[i];
+
+    // Ưu tiên slide đang xem
+    const sortedQueue = [...indicesToProcess].sort((a, b) => {
+      if (a === currentSlideIndex) return -1;
+      if (b === currentSlideIndex) return 1;
+      return a - b;
+    });
+
+    for (let i = 0; i < sortedQueue.length; i++) {
+      const idx = sortedQueue[i];
       const slideText = slidesRawData[idx];
       const match = slideText.match(/\[IMAGE_PROMPT:\s*(.*?)\]/);
       
       if (match && match[1]) {
+        setQueueStatus(`Vẽ ảnh slide ${idx + 1}...`);
+        
         let success = false;
         let attempts = 0;
-        const maxAttempts = 2; // Tự động thử lại tối đa 2 lần nếu lỗi Quota
 
-        while (!success && attempts < maxAttempts) {
+        while (!success && attempts < 2) {
           try {
-            // Xóa trạng thái lỗi trước khi bắt đầu
             setImageErrorMap(prev => {
-              const newErrors = { ...prev };
-              delete newErrors[idx];
-              return newErrors;
+              const next = { ...prev };
+              delete next[idx];
+              return next;
             });
 
             const imgData = await generateImageFromAI(match[1]);
@@ -71,150 +94,45 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
             success = true;
           } catch (err: any) {
             attempts++;
-            const errorMessage = err.message || "";
-            const isQuotaError = errorMessage.includes("429") || errorMessage.toLowerCase().includes("quota");
-
-            if (isQuotaError && attempts < maxAttempts) {
-              setImageErrorMap(prev => ({ ...prev, [idx]: `Hệ thống bận. Tự động thử lại sau 45s (Lần ${attempts})...` }));
-              await new Promise(resolve => setTimeout(resolve, 45000)); // Đợi 45 giây nếu bị Quota
+            const isQuota = err.message?.includes("429") || err.message?.toLowerCase().includes("quota");
+            
+            if (isQuota && attempts < 2) {
+              setQueueStatus(`Đợi 60s để vượt rào giới hạn...`);
+              await new Promise(r => setTimeout(r, 60000));
             } else {
-              setImageErrorMap(prev => ({ ...prev, [idx]: isQuotaError ? "Hết hạn ngạch ảnh AI. Hãy thử lại sau ít phút." : "AI từ chối vẽ ảnh này." }));
-              break; 
+              setImageErrorMap(prev => ({ ...prev, [idx]: isQuota ? "Hạn ngạch đầy. Hãy đợi 1-2 phút." : "AI từ chối vẽ ảnh." }));
+              break;
             }
           }
         }
 
-        // Với API MIỄN PHÍ: Nghỉ 30 giây giữa mỗi slide thành công để không bị khóa RPM
-        if (success && i < indicesToProcess.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 30000));
+        // Với API MIỄN PHÍ: Nghỉ 45-50 giây sau mỗi ảnh thành công là bắt buộc
+        if (success && i < sortedQueue.length - 1) {
+          let timer = 50;
+          while (timer > 0) {
+            setQueueStatus(`Đã vẽ xong ảnh ${idx + 1}. Nghỉ ${timer}s để an toàn...`);
+            await new Promise(r => setTimeout(r, 1000));
+            timer--;
+          }
         }
       }
     }
+
     setIsProcessingImages(false);
+    processingRef.current = false;
+    setQueueStatus("");
   };
 
   useEffect(() => {
-    if (!isPresentationMode || isGenerating || slidesRawData.length === 0) return;
-    
-    const prompts = slidesRawData.map((s, idx) => ({ idx, text: s })).filter(s => s.text.includes('[IMAGE_PROMPT:'));
-    const missingIndices = prompts
-      .filter(p => !imagesMap[p.idx] && !imageErrorMap[p.idx])
-      .map(p => p.idx);
-
-    if (missingIndices.length > 0 && !isProcessingImages) {
-      processImages(missingIndices);
+    if (isPresentationMode && !isGenerating && slidesRawData.length > 0) {
+      processImageQueue();
     }
-  }, [isGenerating, isPresentationMode, slidesRawData, imagesMap, imageErrorMap]);
+  }, [isPresentationMode, isGenerating, slidesRawData.length]);
 
-  const handleRetryImage = (idx: number) => {
-    if (!isProcessingImages) {
-      processImages([idx]);
+  const handleRetry = (idx: number) => {
+    if (!processingRef.current) {
+      processImageQueue();
     }
-  };
-
-  const NLS_PATTERN = /(\d+\.\d+\.[A-Z]{2,3}\d+[a-z]?)/g;
-
-  const createStyledRuns = (text: string, isHeader: boolean = false) => {
-    const parts = text.split(NLS_PATTERN);
-    return parts.map((part, index) => {
-      const isNLS = NLS_PATTERN.test(part);
-      NLS_PATTERN.lastIndex = 0;
-      return new TextRun({
-        text: part,
-        bold: isNLS || isHeader,
-        color: isNLS ? "0000FF" : undefined,
-        size: 24,
-      });
-    });
-  };
-
-  const handleDownloadWord = async () => {
-    setIsExporting(true);
-    try {
-      const lines = [...content.split('\n'), ""];
-      const children: any[] = [];
-      let currentTableRows: string[][] = [];
-      let isCollectingTable = false;
-
-      const flushTable = () => {
-        if (currentTableRows.length > 0) {
-          children.push(new Table({
-            width: { size: 100, type: WidthType.PERCENTAGE },
-            rows: currentTableRows.map((row, idx) => new TableRow({
-              children: row.map(cell => new TableCell({
-                children: [new Paragraph({ 
-                  children: createStyledRuns(cell, idx === 0),
-                  alignment: idx === 0 ? AlignmentType.CENTER : AlignmentType.LEFT
-                })],
-                verticalAlign: VerticalAlign.CENTER,
-                shading: idx === 0 ? { fill: "F2F2F2" } : undefined,
-                borders: {
-                  top: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                  bottom: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                  left: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                  right: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
-                }
-              }))
-            }))
-          }));
-          children.push(new Paragraph({ text: "" }));
-          currentTableRows = [];
-        }
-        isCollectingTable = false;
-      };
-
-      lines.forEach((line) => {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('|')) {
-          isCollectingTable = true;
-          const cells = trimmed.split('|').map(c => c.trim()).filter((c, i, arr) => i > 0 && i < arr.length - 1);
-          if (!cells.every(c => c.includes('---'))) {
-            currentTableRows.push(cells);
-          }
-        } else {
-          if (isCollectingTable) {
-            flushTable();
-          }
-
-          if (trimmed.startsWith('### ')) {
-            const headingText = trimmed.replace('### ', '').replace(/\*\*/g, '');
-            children.push(new Paragraph({
-              text: headingText,
-              heading: HeadingLevel.HEADING_2,
-              spacing: { before: 240, after: 120 },
-              bold: true
-            }));
-          } else if (trimmed && !trimmed.includes('[IMAGE_PROMPT')) {
-            children.push(new Paragraph({
-              children: createStyledRuns(trimmed),
-              spacing: { before: 80, after: 80 },
-            }));
-          }
-        }
-      });
-
-      const doc = new Document({
-        sections: [{
-          children: [
-            new Paragraph({
-              text: "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)",
-              heading: HeadingLevel.HEADING_1,
-              alignment: AlignmentType.CENTER,
-              spacing: { after: 300 }
-            }),
-            ...children
-          ]
-        }]
-      });
-
-      const blob = await Packer.toBlob(doc);
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `GiaoAn_EduGen_${Date.now()}.docx`;
-      link.click();
-    } catch (error) {
-      console.error("Lỗi khi tạo file Word:", error);
-    } finally { setIsExporting(false); }
   };
 
   const handleDownloadPptx = async () => {
@@ -227,94 +145,73 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
       slidesRawData.forEach((slideRaw, idx) => {
         const slide = pres.addSlide();
         const lines = slideRaw.trim().split('\n');
-        let title = "NỘI DUNG BÀI GIẢNG";
+        let title = "BÀI GIẢNG";
         let bodyLines: string[] = [];
         
         lines.forEach(l => {
           const cleanLine = l.trim();
           if (cleanLine.startsWith('### ')) {
-            // Xóa dấu $ khỏi tiêu đề khi xuất PPTX
             title = cleanSlideText(cleanLine.replace('### ', ''));
           } else if (cleanLine && !cleanLine.includes('[IMAGE_PROMPT')) {
-            // Xóa dấu $ khỏi nội dung khi xuất PPTX
             bodyLines.push(cleanSlideText(cleanLine));
           }
         });
 
         slide.background = { fill: "F8FAFC" };
-
         slide.addText(title.toUpperCase(), { 
-          x: 0.5, y: 0.2, w: 9.0, h: 0.8, 
-          fontSize: 24, bold: true, color: '1E3A8A',
-          align: 'center', valign: 'middle' 
+          x: 0.5, y: 0.2, w: 9.0, h: 0.8, fontSize: 22, bold: true, color: '1E3A8A', align: 'center', valign: 'middle' 
         });
 
-        const hasImage = !!imagesMap[idx];
-        const bodyW = hasImage ? 5.8 : 9.0;
+        const hasImg = !!imagesMap[idx];
+        const contentW = hasImg ? 5.8 : 9.0;
         
-        let fontSize = 18;
-        if (bodyLines.length > 12) fontSize = 11;
-        else if (bodyLines.length > 10) fontSize = 13;
-        else if (bodyLines.length > 8) fontSize = 15;
-        else if (bodyLines.length > 5) fontSize = 17;
-
-        const textObjects = bodyLines.map(text => ({
-          text: text,
-          options: { 
-            bullet: true, 
-            fontSize: fontSize, 
-            color: '334155',
-            paraSpaceBefore: 0.05,
-            breakLine: true
-          }
-        }));
-
-        slide.addText(textObjects, { 
-          x: 0.5, y: 1.2, w: bodyW, h: 3.8,
-          valign: 'top',
-          align: 'left',
-          autoFit: true
+        slide.addText(bodyLines.map(t => ({ text: t, options: { bullet: true, fontSize: 15, color: '334155', breakLine: true } })), { 
+          x: 0.5, y: 1.2, w: contentW, h: 3.8, valign: 'top', autoFit: true 
         });
 
-        if (hasImage) {
-          slide.addImage({ 
-            data: imagesMap[idx], 
-            x: 6.5, y: 1.2, w: 3.0, h: 3.5,
-            sizing: { type: 'contain' }
-          });
+        if (hasImg) {
+          slide.addImage({ data: imagesMap[idx], x: 6.5, y: 1.2, w: 3.0, h: 3.5, sizing: { type: 'contain' } });
         }
 
-        slide.addText("EduGen VN BY NGUYỄN ĐỨC THƯƠNG - Hệ sinh thái giáo dục số", {
-          x: 0.0, y: 5.2, w: 10, h: 0.3,
-          fontSize: 9, color: '94A3B8', align: 'center', italic: true
-        });
+        slide.addText("HỆ SINH THÁI GIÁO DỤC SỐ - EDUGEN VN", { x: 0, y: 5.2, w: 10, h: 0.3, fontSize: 8, color: '94A3B8', align: 'center' });
       });
       
-      await pres.writeFile({ fileName: `Slide_EduGen_${Date.now()}.pptx` });
+      await pres.writeFile({ fileName: `EduGen_Slide_${Date.now()}.pptx` });
     } catch (err) {
-      console.error("Lỗi xuất file PPTX:", err);
-    } finally { 
-      setIsExporting(false); 
-    }
+      console.error(err);
+    } finally { setIsExporting(false); }
+  };
+
+  const handleDownloadWord = async () => {
+    setIsExporting(true);
+    try {
+      const doc = new Document({
+        sections: [{
+          children: [
+            new Paragraph({ text: "GIÁO ÁN PHÁT TRIỂN NĂNG LỰC SỐ (NLS)", heading: HeadingLevel.HEADING_1, alignment: AlignmentType.CENTER }),
+            ...content.split('\n').filter(l => !l.includes('[IMAGE_PROMPT')).map(l => new Paragraph({ text: l.replace(/\$/g, '').trim(), spacing: { before: 120 } }))
+          ]
+        }]
+      });
+      const blob = await Packer.toBlob(doc);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `GiaoAn_EduGen_${Date.now()}.docx`;
+      link.click();
+    } catch (err) {
+      console.error(err);
+    } finally { setIsExporting(false); }
   };
 
   const markdownComponents = {
     text: ({ children }: any) => {
       if (typeof children !== 'string') return children;
-      // Xóa dấu $ triệt để trong giao diện web
-      const noDollarText = isPresentationMode ? children.replace(/\$/g, '') : children;
-      const parts = noDollarText.split(NLS_PATTERN);
-      return parts.map((part, i) => {
-        if (NLS_PATTERN.test(part)) {
-          NLS_PATTERN.lastIndex = 0;
-          return <span key={i} className="font-bold text-blue-600 underline-offset-4">{part}</span>;
-        }
-        return part;
-      });
+      return children.replace(/\$/g, '');
     }
   };
 
-  const isWorking = isGenerating || isProcessingImages;
+  const currentSlide = slidesRawData[currentSlideIndex];
+  const hasImageTag = currentSlide?.includes('[IMAGE_PROMPT:');
 
   return (
     <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col h-[750px] lg:h-[900px]">
@@ -325,22 +222,20 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
           </div>
           <div className="flex flex-col">
             <span className="font-bold text-slate-700 leading-none">Studio EduGen</span>
-            {isWorking && (
-              <span className="text-[9px] font-bold text-blue-600 animate-pulse mt-1 flex items-center gap-1 uppercase">
-                <span className="w-1.5 h-1.5 bg-blue-600 rounded-full"></span>
-                {isGenerating ? "Đang soạn thảo..." : "Đang vẽ ảnh (Đợi 30s/ảnh để tránh lỗi khóa)..."}
+            {queueStatus && (
+              <span className="text-[10px] font-bold text-orange-600 animate-pulse mt-1 uppercase flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-orange-600 rounded-full"></span>
+                {queueStatus}
               </span>
             )}
           </div>
         </div>
         <button
           onClick={isPresentationMode ? handleDownloadPptx : handleDownloadWord}
-          disabled={isExporting || isWorking}
-          className={`px-5 py-2 rounded-xl text-white font-bold text-sm shadow-md transition-all flex items-center gap-2 ${
-            isWorking ? 'animate-pulse opacity-80 cursor-wait' : ''
-          } ${isPresentationMode ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+          disabled={isExporting || isGenerating}
+          className={`px-5 py-2 rounded-xl text-white font-bold text-sm shadow-md transition-all ${isPresentationMode ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'} disabled:bg-slate-300`}
         >
-          {isExporting ? "ĐANG XUẤT FILE..." : isGenerating ? "ĐANG SOẠN..." : isProcessingImages ? "ĐANG VẼ ẢNH AI..." : isPresentationMode ? "TẢI SLIDE (PPTX)" : "TẢI FILE WORD"}
+          {isExporting ? "ĐANG XUẤT..." : isPresentationMode ? "TẢI SLIDE (PPTX)" : "TẢI WORD"}
         </button>
       </div>
 
@@ -349,37 +244,36 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
           <div className="flex flex-col items-center">
             <div className="w-full max-w-4xl aspect-[16/9] bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col p-8 relative">
               <h4 className="text-2xl font-bold text-blue-700 mb-6 border-b pb-4">
-                {cleanSlideText(slidesRawData[currentSlideIndex].match(/### (.*)/)?.[1] || "Nội dung bài học")}
+                {cleanSlideText(currentSlide.match(/### (.*)/)?.[1] || "Bài giảng")}
               </h4>
               <div className="flex gap-8 flex-grow">
-                <div className="flex-grow prose prose-slate">
+                <div className={`${hasImageTag || imagesMap[currentSlideIndex] ? 'w-2/3' : 'w-full'} flex-grow prose prose-slate`}>
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {slidesRawData[currentSlideIndex].replace(/### .*\n/, '').replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
+                    {currentSlide.replace(/### .*\n/, '').replace(/\[IMAGE_PROMPT:.*?\]/g, '')}
                   </ReactMarkdown>
                 </div>
+                
                 {imagesMap[currentSlideIndex] ? (
-                  <div className="w-1/3 rounded-xl overflow-hidden shadow-md">
+                  <div className="w-1/3 rounded-xl overflow-hidden shadow-md bg-slate-50">
                     <img src={imagesMap[currentSlideIndex]} className="w-full h-full object-cover" alt="AI slide" />
                   </div>
                 ) : imageErrorMap[currentSlideIndex] ? (
-                  <div className="w-1/3 rounded-xl bg-red-50 flex flex-col items-center justify-center text-red-500 p-4 gap-2 border border-dashed border-red-200">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    <p className="text-[9px] font-bold text-center uppercase">{imageErrorMap[currentSlideIndex]}</p>
-                    <button onClick={() => handleRetryImage(currentSlideIndex)} className="mt-2 text-[9px] underline font-bold">Thử vẽ lại</button>
+                  <div className="w-1/3 rounded-xl bg-red-50 flex flex-col items-center justify-center text-red-500 p-4 border border-dashed border-red-200">
+                    <p className="text-[9px] font-bold text-center uppercase mb-2">{imageErrorMap[currentSlideIndex]}</p>
+                    <button onClick={() => handleRetry(currentSlideIndex)} className="text-[9px] underline font-bold">Thử lại</button>
                   </div>
-                ) : slidesRawData[currentSlideIndex].includes('[IMAGE_PROMPT:') ? (
+                ) : hasImageTag ? (
                   <div className="w-1/3 rounded-xl bg-slate-100 flex flex-col items-center justify-center text-slate-400 gap-2 border border-dashed border-slate-300">
                     <svg className="animate-spin h-6 w-6 text-slate-300" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    <span className="text-[10px] font-bold uppercase">Đang vẽ...</span>
-                    <p className="text-[8px] text-slate-400 italic">Tối đa 2 ảnh/phút</p>
+                    <span className="text-[10px] font-bold uppercase">Đang đợi vẽ ảnh...</span>
                   </div>
                 ) : null}
               </div>
             </div>
             <div className="mt-6 flex items-center gap-4">
-              <button onClick={() => setCurrentSlideIndex(p => Math.max(0, p - 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50 transition-colors">◀</button>
+              <button onClick={() => setCurrentSlideIndex(p => Math.max(0, p - 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50">◀</button>
               <span className="font-bold text-slate-500 bg-white px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">{currentSlideIndex + 1} / {slidesRawData.length}</span>
-              <button onClick={() => setCurrentSlideIndex(p => Math.min(slidesRawData.length - 1, p + 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50 transition-colors">▶</button>
+              <button onClick={() => setCurrentSlideIndex(p => Math.min(slidesRawData.length - 1, p + 1))} className="p-2 bg-white border rounded-lg shadow hover:bg-slate-50">▶</button>
             </div>
           </div>
         ) : (
