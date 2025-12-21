@@ -54,6 +54,11 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
         const match = item.text.match(/\[IMAGE_PROMPT:\s*(.*?)\]/);
         if (match && match[1]) {
           try {
+            // Thêm delay 3 giây giữa các yêu cầu tạo ảnh để không bị lỗi Quota 429 trên bản miễn phí
+            if (item !== missingIndices[0]) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+            
             const imgData = await generateImageFromAI(match[1]);
             setImagesMap(prev => ({ ...prev, [item.idx]: imgData }));
             setImageErrorMap(prev => {
@@ -64,12 +69,12 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
           } catch (err: any) {
             console.error("Lỗi tạo ảnh cho slide", item.idx, err);
             const errorMessage = err.message || "Lỗi không xác định.";
-            if (errorMessage.includes("API Key")) {
-               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Lỗi API Key. Vui lòng kiểm tra lại cấu hình." }));
-            } else if (errorMessage.toLowerCase().includes("quota")) {
-               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Đã hết hạn ngạch miễn phí cho mô hình ảnh." }));
+            if (errorMessage.includes("429") || errorMessage.toLowerCase().includes("quota")) {
+               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Hết lượt tạo ảnh miễn phí (RPM). Đang thử lại..." }));
+               // Nếu lỗi quota, đợi lâu hơn rồi thử lại hoặc bỏ qua
+               await new Promise(resolve => setTimeout(resolve, 5000));
             } else {
-               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Không thể tạo ảnh. Vui lòng thử lại." }));
+               setImageErrorMap(prev => ({ ...prev, [item.idx]: "Không thể tạo ảnh cho slide này." }));
             }
           }
         }
@@ -81,6 +86,11 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   }, [isGenerating, isPresentationMode, slidesRawData, imagesMap, imageErrorMap]);
 
   const NLS_PATTERN = /(\d+\.\d+\.[A-Z]{2,3}\d+[a-z]?)/g;
+
+  // Hàm tiện ích để làm sạch văn bản (xóa dấu $)
+  const cleanPptxText = (text: string) => {
+    return text.replace(/\$/g, '').trim();
+  };
 
   const createStyledRuns = (text: string, isHeader: boolean = false) => {
     const parts = text.split(NLS_PATTERN);
@@ -99,7 +109,7 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
   const handleDownloadWord = async () => {
     setIsExporting(true);
     try {
-      const lines = [...content.split('\n'), ""]; // Thêm dòng trống để trigger kết thúc bảng cuối
+      const lines = [...content.split('\n'), ""];
       const children: any[] = [];
       let currentTableRows: string[][] = [];
       let isCollectingTable = false;
@@ -136,7 +146,6 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
         if (trimmed.startsWith('|')) {
           isCollectingTable = true;
           const cells = trimmed.split('|').map(c => c.trim()).filter((c, i, arr) => i > 0 && i < arr.length - 1);
-          // Bỏ qua dòng separator |---|---|
           if (!cells.every(c => c.includes('---'))) {
             currentTableRows.push(cells);
           }
@@ -202,9 +211,11 @@ export const ExamDisplay: React.FC<ExamDisplayProps> = ({ content, isPresentatio
         lines.forEach(l => {
           const cleanLine = l.trim();
           if (cleanLine.startsWith('### ')) {
-            title = cleanLine.replace('### ', '').trim();
+            // Xóa dấu $ khỏi tiêu đề slide
+            title = cleanPptxText(cleanLine.replace('### ', ''));
           } else if (cleanLine && !cleanLine.includes('[IMAGE_PROMPT')) {
-            bodyLines.push(cleanLine);
+            // Xóa dấu $ khỏi nội dung slide
+            bodyLines.push(cleanPptxText(cleanLine));
           }
         });
 
